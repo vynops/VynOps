@@ -1,0 +1,15 @@
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  turbopack: {},
+  allowedDevOrigins: ['80.225.224.1'],
+  experimental: {
+    optimizePackageImports: ['lucide-react', 'recharts'],
+  },
+  images: {
+    domains: [],
+  },
+}
+
+export default nextConfig

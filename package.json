@@ -1,0 +1,27 @@
+{
+  "name": "VynOps-ai",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@11.12.1",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "type-check": "turbo type-check"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.7",
+    "turbo": "^2.3.3",
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.7"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.63",
+    "@types/bcryptjs": "^2.4.6",
+    "bcryptjs": "^3.0.3"
+  }
+}

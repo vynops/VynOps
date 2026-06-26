@@ -1,0 +1,23 @@
+[0;1;32m●[0m pm2-vynops.service - PM2 process manager
+     Loaded: loaded (/etc/systemd/system/pm2-vynops.service; enabled; vendor preset: enabled)
+     Active: [0;1;32mactive (exited)[0m since Sun 2026-06-07 13:16:22 UTC; 14ms ago
+       Docs: https://pm2.keymetrics.io/
+    Process: 3813398 ExecStart=/home/vynops/.nvm/versions/node/v20.20.2/lib/node_modules/pm2/bin/pm2 resurrect (code=exited, status=0/SUCCESS)
+   Main PID: 3813398 (code=exited, status=0/SUCCESS)
+      Tasks: 27 (limit: 57692)
+     Memory: 37.9M
+     CGroup: /system.slice/pm2-vynops.service
+             ├─3813418 PM2 v7.0.1: God Daemon (/home/vynops/.pm2)
+             ├─3813429 /home/vynops/.nvm/versions/node/v20.20.2/bin/node --max-old-space-size=1536 /home/vynops/.nvm/versions/node/v20.20.2/lib/node_modules/pm2/lib/ProcessContainerFork.js
+             └─3813430 kubectl proxy --port=8001 --address=127.0.0.1
+
+Jun 07 13:16:22 vnic pm2[3813398]: [PM2] Restoring processes located in /home/vynops/.pm2/dump.pm2
+Jun 07 13:16:22 vnic pm2[3813398]: [PM2] Process /home/vynops/vynops/apps/web/server.mjs restored
+Jun 07 13:16:22 vnic pm2[3813398]: [PM2] Process /usr/bin/bash restored
+Jun 07 13:16:22 vnic pm2[3813398]: ┌────┬──────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+Jun 07 13:16:22 vnic pm2[3813398]: │ id │ name             │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+Jun 07 13:16:22 vnic pm2[3813398]: ├────┼──────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+Jun 07 13:16:22 vnic pm2[3813398]: │ 1  │ kubectl-proxy    │ default     │ N/A     │ fork    │ 3813430  │ 0s     │ 0    │ online    │ 0%       │ 27.2mb   │ vynops   │ disabled │
+Jun 07 13:16:22 vnic pm2[3813398]: │ 0  │ vynops           │ default     │ 0.1.0   │ fork    │ 3813429  │ 0s     │ 0    │ online    │ 0%       │ 27.0mb   │ vynops   │ disabled │
+Jun 07 13:16:22 vnic pm2[3813398]: └────┴──────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+Jun 07 13:16:22 vnic systemd[1]: Finished PM2 process manager.

@@ -1,0 +1,92 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+
+# Runtime & secrets — NEVER commit these
+.env
+.env.local
+.env.*.local
+config.runtime.json
+
+# Persistent data — contains cluster URLs, user records, hashed passwords
+apps/web/data/
+# Allow safe seed files for fresh clones (no secrets, no real IPs)
+!apps/web/data/clusters.json.example
+!apps/web/data/users.json
+!apps/web/data/oncall.json
+!apps/web/data/incidents-manual.json
+# clusters.json has real server IPs + Couchbase password — NEVER commit
+apps/web/data/clusters.json
+# passwords.json has bcrypt hashes — NEVER commit
+apps/web/data/passwords.json
+# pm2 runtime directory
+.pm2/
+apps/web/audit.log.jsonl
+apps/web/notifications.log.jsonl
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Turbo
+.turbo/
+
+# Testing artifacts (keep spec source files, ignore generated output)
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+tests/e2e/.auth/
+
+# Env backup/scratch files — may contain real secrets
+.env.local.bak
+.env.local.bak2
+.env.local.bak*
+.env.local[0-9]*
+*.env.bak
+
+# SSH keys — never commit
+*.key
+*.pem
+*.ppk
+
+# Temporary fix/debug scripts (root-level scratch files)
+fix_*.mjs
+fix-*.mjs
+fix_*.js
+fix-*.js
+tmp_*.tsx
+tmp_*.ts
+audit.js
+scan.js
+check-anchors.js
+
+# Deploy scripts — contain server IPs and key paths (keep locally only)
+deploy_*.sh
+deploy.ps1
+github-ready.ps1
+healthcheck.sh
+scorecheck.sh
+validate.ps1
+
+# Misc root scratch
+tsc-errors*.txt
+tsc*.txt
+api-auth-matrix.tsv

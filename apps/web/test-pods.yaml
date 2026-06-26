@@ -1,0 +1,112 @@
+﻿# ─────────────────────────────────────────────────────────────────────────────
+# VynOps Pods-tab feature demo — apply once, then refresh the dashboard
+#   kubectl apply -f test-pods.yaml
+#   kubectl delete -f test-pods.yaml   (cleanup)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 1. OOMKilled badge + OOMKilled in container state
+#    A pod that allocates far more RAM than its 20Mi limit → kernel OOM-kills it.
+#    After ~10s it shows status=OOMKilled with the red badge in the table.
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-oom
+  namespace: default
+  labels:
+    demo: pods-tab
+spec:
+  restartPolicy: Never
+  containers:
+    - name: memory-hog
+      image: python:3-alpine
+      # bytearray() allocates heap memory directly — guaranteed OOMKill at ~30Mi limit
+      command: ["python3", "-c", "x = bytearray(200 * 1024 * 1024); print('allocated')"]
+      resources:
+        requests:
+          memory: "5Mi"
+        limits:
+          memory: "30Mi"
+
+---
+# 2. Pending + scheduling failure + scheduling failure detail
+#    Requests a node label that doesn't exist → Unschedulable immediately.
+#    Shows: warning icon in status column; full failure reason in expanded row.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-pending
+  namespace: default
+  labels:
+    demo: pods-tab
+spec:
+  nodeSelector:
+    gpu: "true"
+  containers:
+    - name: nginx
+      image: nginx:alpine
+
+---
+# 3. Init container indicator + Init containers section
+#    Has two init containers (fast-succeed + slow-sleep) then a main container.
+#    While the second init runs you see [i] badge and a purple Init Containers
+#    sub-table in the expanded row.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-init
+  namespace: default
+  labels:
+    demo: pods-tab
+spec:
+  initContainers:
+    - name: init-check
+      image: busybox:latest
+      command: ["sh", "-c", "echo 'init-check done'; sleep 1"]
+    - name: init-seed
+      image: busybox:latest
+      command: ["sh", "-c", "echo 'init-seed running'; sleep 30"]
+  containers:
+    - name: app
+      image: nginx:alpine
+
+---
+# 4. Restart spike (🔥 icon)
+#    Exits immediately with code 1 every restart → many restarts in 10m window.
+#    The flame icon appears next to the restart count within a few cycles.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-crashloop
+  namespace: default
+  labels:
+    demo: pods-tab
+spec:
+  containers:
+    - name: crasher
+      image: busybox:latest
+      command: ["sh", "-c", "echo 'crash!'; exit 1"]
+
+---
+# 5. Topology spread constraints
+#    Pod spec carries topologySpreadConstraints → shown in expanded metadata strip.
+#    (The pod itself runs fine; we're just surfacing the spec field.)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-spread
+  namespace: default
+  labels:
+    demo: pods-tab
+    app: demo-spread
+spec:
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: demo-spread
+  containers:
+    - name: nginx
+      image: nginx:alpine
