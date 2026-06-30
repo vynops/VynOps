@@ -165,10 +165,15 @@ function LoginForm() {
           </p>
         </div>
 
-        {/* Footer */}
-        <p className="text-center text-xs text-surface-600 mt-6">
-          VynOps AI · Enterprise Kubernetes Operations
-        </p>
+        {/* Family footer */}
+        <div className="mt-8 flex flex-col items-center gap-3">
+          <p className="text-xs text-surface-600 tracking-widest uppercase">Part of the VynOps Suite</p>
+          <div className="flex items-center gap-2">
+            <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-brand-500/20 text-brand-300 border border-brand-500/30">VynOps</span>
+            <a href="http://localhost:3010" className="px-2.5 py-1 rounded-full text-xs font-medium text-surface-500 border border-surface-700 hover:text-surface-300 hover:border-surface-500 transition-colors">VynAI</a>
+            <a href="http://localhost:3020" className="px-2.5 py-1 rounded-full text-xs font-medium text-surface-500 border border-surface-700 hover:text-surface-300 hover:border-surface-500 transition-colors">VynCost</a>
+          </div>
+        </div>
       </div>
     </div>
   )
