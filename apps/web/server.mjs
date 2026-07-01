@@ -30,7 +30,7 @@ const CRON_SECRET = process.env.CRON_SECRET
 
 const dev = process.env.NODE_ENV !== 'production'
 const hostname = process.env.HOST || '0.0.0.0'
-const port = parseInt(process.env.PORT || '3000', 10)
+const port = parseInt(process.env.PORT || '3030', 10)
 
 // kubectl proxy URL — override with KUBECTL_PROXY_URL env var if needed
 const KUBECTL_PROXY = (process.env.KUBECTL_PROXY_URL || 'http://127.0.0.1:8001')
