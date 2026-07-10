@@ -14,6 +14,7 @@ export const metadata: Metadata = {
   title: { default: 'VynOps · VynOps Suite', template: '%s | VynOps' },
   description: 'AI-Native Cloud Operations Platform — Enterprise AIOps for Kubernetes, Cloud & Infrastructure',
   keywords: ['AIOps', 'Kubernetes', 'Observability', 'AI Operations', 'SRE', 'DevOps'],
+  icons: { icon: '/api/favicon', shortcut: '/api/favicon', apple: '/api/favicon' },
 }
 
 export const viewport: Viewport = {

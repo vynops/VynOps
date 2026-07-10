@@ -35,8 +35,8 @@ const SECTIONS = [
   { id: 'oncall',        label: 'On-Call',        icon: Clock },
   { id: 'access',        label: 'Access & Keys', icon: Key },
   { id: 'audit-log',     label: 'Audit Log',     icon: BookOpen },
-  { id: 'about',         label: 'About',         icon: Info },
   { id: 'profile',       label: 'Profile',       icon: User },
+  { id: 'about',         label: 'About',         icon: Info },
 ] as const
 type SectionId = typeof SECTIONS[number]['id']
 
@@ -132,7 +132,7 @@ function ConnectionsTab() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold text-white">Backend Connections</h2>
-          <p className="text-xs text-surface-500 mt-0.5">Live health probe ? K8s API + Prometheus</p>
+          <p className="text-xs text-surface-500 mt-0.5">Live health probe � K8s API + Prometheus</p>
         </div>
         <button onClick={probe} disabled={loading}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-xl text-xs text-surface-300 hover:text-white disabled:opacity-50 transition-all">
@@ -172,10 +172,10 @@ function ConnectionsTab() {
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
               {[
-                { label: 'K8s Version', value: data.k8s.version ?? '?' },
+                { label: 'K8s Version', value: data.k8s.version ?? '�' },
                 { label: 'Nodes',       value: String(data.k8s.nodeCount) },
                 { label: 'Namespaces',  value: String(data.k8s.namespaceCount) },
-                { label: 'Platform',    value: data.k8s.platform ?? '?' },
+                { label: 'Platform',    value: data.k8s.platform ?? '�' },
               ].map(f => (
                 <div key={f.label} className="rounded-xl bg-surface-900/60 border border-surface-800 px-3 py-2">
                   <p className="text-2xs text-surface-500">{f.label}</p>
@@ -263,10 +263,10 @@ function ConnectionsTab() {
         {data?.prometheus?.ok && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[
-              { label: 'Version',      value: data.prometheus.version ?? '?' },
+              { label: 'Version',      value: data.prometheus.version ?? '�' },
               { label: 'Uptime',       value: fmtUptime(data.prometheus.startTime) },
               { label: 'Targets Up',   value: `${data.prometheus.upTargets} / ${data.prometheus.totalTargets}` },
-              { label: 'Config OK',    value: data.prometheus.reloadOk === false ? 'Failed' : data.prometheus.reloadOk ? 'OK' : '?' },
+              { label: 'Config OK',    value: data.prometheus.reloadOk === false ? 'Failed' : data.prometheus.reloadOk ? 'OK' : '�' },
             ].map(f => (
               <div key={f.label} className="rounded-xl bg-surface-900/60 border border-surface-800 px-3 py-2">
                 <p className="text-2xs text-surface-500">{f.label}</p>
@@ -299,7 +299,7 @@ function ConnectionsTab() {
         {data?.prometheus?.ok && data.prometheus.downTargets > 0 && (
           <div className="mt-3 flex items-center gap-2 text-xs text-warning bg-warning/5 border border-warning/20 rounded-xl px-3 py-2">
             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-            {data.prometheus.downTargets} scrape target{data.prometheus.downTargets !== 1 ? 's' : ''} down ? check Prometheus targets
+            {data.prometheus.downTargets} scrape target{data.prometheus.downTargets !== 1 ? 's' : ''} down � check Prometheus targets
           </div>
         )}
       </div>
@@ -356,7 +356,7 @@ function DataSourcesTab() {
         <div>
           <h2 className="text-sm font-semibold text-white">Data Sources</h2>
           <p className="text-xs text-surface-500 mt-0.5">
-            Live connectivity probe ? values from <code className="text-brand-300 font-mono">.env.local</code>
+            Live connectivity probe � values from <code className="text-brand-300 font-mono">.env.local</code>
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -383,7 +383,7 @@ function DataSourcesTab() {
 
       {loading && sources.length === 0 && (
         <div className="flex items-center gap-2 text-xs text-surface-500 py-4">
-          <Loader2 className="w-4 h-4 animate-spin" /> Probing data sources?
+          <Loader2 className="w-4 h-4 animate-spin" /> Probing data sources�
         </div>
       )}
 
@@ -410,14 +410,14 @@ function DataSourcesTab() {
                       </div>
                       {src.url
                         ? <p className="text-2xs font-mono text-surface-500 truncate mt-0.5">{src.displayUrl ?? src.url}</p>
-                        : <p className="text-2xs text-surface-600 italic mt-0.5">Not configured ? set {src.envVar} in .env.local</p>
+                        : <p className="text-2xs text-surface-600 italic mt-0.5">Not configured � set {src.envVar} in .env.local</p>
                       }
                     </div>
                   </div>
                   {/* Right */}
                   <div className="flex-shrink-0 sm:text-right pl-6 sm:pl-0">
                     {!src.url ? (
-                      <span className="text-2xs text-surface-600 italic">?</span>
+                      <span className="text-2xs text-surface-600 italic">�</span>
                     ) : src.ok ? (
                       <div className="flex items-center gap-2">
                         <span className={cn('text-xs font-mono', latencyColor(src.latencyMs))}>{src.latencyMs}ms</span>
@@ -510,14 +510,14 @@ function IntegrationsTab() {
     return acc
   }, {})
 
-  if (loading) return <div className="flex items-center gap-2 text-xs text-surface-500 py-4"><Loader2 className="w-4 h-4 animate-spin" /> Loading?</div>
+  if (loading) return <div className="flex items-center gap-2 text-xs text-surface-500 py-4"><Loader2 className="w-4 h-4 animate-spin" /> Loading�</div>
 
   return (
     <div className="space-y-6 max-w-2xl">
       {dirty && (
         <div className="rounded-xl bg-warning/10 border border-warning/30 px-4 py-2.5 flex items-center gap-2 text-xs text-warning">
           <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-          Unsaved changes ? save before leaving this tab
+          Unsaved changes � save before leaving this tab
         </div>
       )}
       {Object.entries(byCategory).map(([cat, items]) => (
@@ -707,7 +707,7 @@ function NotificationsTab() {
         ),
       })
       const d = await r.json()
-      const msg = d.ok ? `? ${d.message ?? d.version ?? 'Connected'} ? ${d.latencyMs}ms` : `? ${d.error}`
+      const msg = d.ok ? `? ${d.message ?? d.version ?? 'Connected'} � ${d.latencyMs}ms` : `? ${d.error}`
       setTestRes(prev => ({ ...prev, [ch.id]: { ok: d.ok, msg } }))
       if (d.ok) {
         // Reload last_tested from config after successful test
@@ -727,14 +727,14 @@ function NotificationsTab() {
     setDirty(true)
   }
 
-  if (loading) return <div className="flex items-center gap-2 text-xs text-surface-500 py-4"><Loader2 className="w-4 h-4 animate-spin" /> Loading configuration?</div>
+  if (loading) return <div className="flex items-center gap-2 text-xs text-surface-500 py-4"><Loader2 className="w-4 h-4 animate-spin" /> Loading configuration�</div>
 
   return (
     <div className="space-y-6 max-w-2xl">
       {dirty && (
         <div className="rounded-xl bg-warning/10 border border-warning/30 px-4 py-2.5 flex items-center gap-2 text-xs text-warning">
           <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-          Unsaved changes ? save before leaving this tab
+          Unsaved changes � save before leaving this tab
         </div>
       )}
 
@@ -935,7 +935,7 @@ function NotificationsTab() {
                     body: JSON.stringify({ action: 'email', email: values.alert_email }),
                   })
                   const d = await r.json()
-                  setTestRes(prev => ({ ...prev, smtp_test: { ok: d.ok, msg: d.ok ? `? Test email sent ? ${d.latencyMs}ms` : `? ${d.error ?? d.message}` } }))
+                  setTestRes(prev => ({ ...prev, smtp_test: { ok: d.ok, msg: d.ok ? `? Test email sent � ${d.latencyMs}ms` : `? ${d.error ?? d.message}` } }))
                 } catch (e: any) {
                   setTestRes(prev => ({ ...prev, smtp_test: { ok: false, msg: `? ${e.message}` } }))
                 } finally {
@@ -970,9 +970,9 @@ function NotificationsTab() {
 
 // -- AI Provider tab -------------------------------------------------------
 const GROQ_MODELS = [
-  { id: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout 17B',     note: 'Best balance ? 30k TPM ? 500k TPD' },
-  { id: 'llama-3.3-70b-versatile',                   label: 'Llama 3.3 70B Versatile', note: 'Strong tool calling ? 12k TPM ? 100k TPD' },
-  { id: 'llama-3.1-8b-instant',                      label: 'Llama 3.1 8B Instant',    note: 'Fast ? 6k TPM ? 500k TPD ? lower quality' },
+  { id: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout 17B',     note: 'Best balance � 30k TPM � 500k TPD' },
+  { id: 'llama-3.3-70b-versatile',                   label: 'Llama 3.3 70B Versatile', note: 'Strong tool calling � 12k TPM � 100k TPD' },
+  { id: 'llama-3.1-8b-instant',                      label: 'Llama 3.1 8B Instant',    note: 'Fast � 6k TPM � 500k TPD � lower quality' },
 ]
 
 function AIProviderTab() {
@@ -1048,18 +1048,18 @@ function AIProviderTab() {
         body: JSON.stringify({ action: 'groq', apiKey: keyToTest, model }),
       })
       const d = await r.json()
-      setTestRes({ ok: d.ok, msg: d.ok ? `? ${d.message} ? ${d.latencyMs}ms` : `? ${d.error}` })
+      setTestRes({ ok: d.ok, msg: d.ok ? `? ${d.message} � ${d.latencyMs}ms` : `? ${d.error}` })
     } catch (e: any) {
       setTestRes({ ok: false, msg: `? ${e.message}` })
     } finally { setTesting(false) }
   }
 
-  if (loading) return <div className="flex items-center gap-2 text-xs text-surface-500 py-4"><Loader2 className="w-4 h-4 animate-spin" /> Loading configuration?</div>
+  if (loading) return <div className="flex items-center gap-2 text-xs text-surface-500 py-4"><Loader2 className="w-4 h-4 animate-spin" /> Loading configuration�</div>
 
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h2 className="text-sm font-semibold text-white">AI Provider ? Groq</h2>
+        <h2 className="text-sm font-semibold text-white">AI Provider � Groq</h2>
         <p className="text-xs text-surface-500 mt-0.5">API key and model selection for the AI Copilot. Changes take effect immediately.</p>
       </div>
 
@@ -1336,7 +1336,7 @@ function UsersTab() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold text-white">Users</h2>
-          <p className="text-xs text-surface-500 mt-0.5">Stored in <code className="text-brand-400">data/users.json</code> ? persists across upgrades</p>
+          <p className="text-xs text-surface-500 mt-0.5">Stored in <code className="text-brand-400">data/users.json</code> � persists across upgrades</p>
         </div>
         {isAdmin && (
           <button onClick={() => { setAdding(a => !a); setTabError(null) }}
@@ -1370,7 +1370,7 @@ function UsersTab() {
                   ['name',     'Full Name',  'Alex Karev',           false],
                   ['email',    'Email',      'user@example.com',     false],
                   ['team',     'Team',       'Platform Engineering', false],
-                  ['password', 'Password',   '????????',             true ],
+                  ['password', 'Password',   '��������',             true ],
                 ] as [keyof typeof addForm, string, string, boolean][]).map(([k, lbl, ph, isPw]) => (
                   <div key={k}>
                     <label className="block text-2xs text-surface-400 mb-1">{lbl} {k !== 'team' && <span className="text-red-400">*</span>}</label>
@@ -1406,7 +1406,7 @@ function UsersTab() {
       {/* User list */}
       {loading ? (
         <div className="flex items-center gap-2 py-8 text-surface-400 text-sm">
-          <Loader2 className="w-4 h-4 animate-spin" /> Loading users?
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading users�
         </div>
       ) : (
         <div className="space-y-2">
@@ -1423,7 +1423,7 @@ function UsersTab() {
                     {u.id === selfId && <span className="text-2xs px-1.5 py-0.5 rounded border text-brand-400 bg-brand-500/10 border-brand-500/30">you</span>}
                     <span className={cn('text-2xs px-1.5 py-0.5 rounded border', ROLE_BADGE[u.role] ?? ROLE_BADGE.viewer)}>{u.role}</span>
                   </div>
-                  <div className="text-xs text-surface-500 truncate">{u.email}{u.team ? ` ? ${u.team}` : ''}</div>
+                  <div className="text-xs text-surface-500 truncate">{u.email}{u.team ? ` � ${u.team}` : ''}</div>
                 </div>
                 {isAdmin && (
                   <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -1668,7 +1668,7 @@ function OnCallTab() {
     } finally { setSaving(false) }
   }
 
-  if (loading) return <div className="flex items-center gap-2 text-xs text-surface-500"><Loader2 className="w-4 h-4 animate-spin" /> Loading on-call data?</div>
+  if (loading) return <div className="flex items-center gap-2 text-xs text-surface-500"><Loader2 className="w-4 h-4 animate-spin" /> Loading on-call data�</div>
   if (error)   return <p className="text-xs text-danger">{error}</p>
   if (!primary) return <p className="text-xs text-surface-500">No schedules found.</p>
 
@@ -1701,7 +1701,7 @@ function OnCallTab() {
       <div className="rounded-xl bg-surface-900 border border-surface-800 overflow-hidden">
         <div className="px-4 py-3 border-b border-surface-800 flex items-center justify-between">
           <span className="text-xs font-semibold text-white">Rotation Members</span>
-          <span className="text-2xs text-surface-500">{primary.members.length} members ? {primary.rotationDays}-day shifts</span>
+          <span className="text-2xs text-surface-500">{primary.members.length} members � {primary.rotationDays}-day shifts</span>
         </div>
         <div className="divide-y divide-surface-800">
           {primary.members.map((m, i) => (
@@ -1921,7 +1921,7 @@ function OnCallTab() {
           <div className="flex gap-2 flex-wrap">
             <select value={overrideName} onChange={e => setOverrideName(e.target.value)}
               className="bg-surface-800 border border-surface-700 rounded-xl px-3 py-1.5 text-xs text-white outline-none focus:border-brand-500 flex-1">
-              <option value="">Select member?</option>
+              <option value="">Select member�</option>
               {primary.members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
             <select value={overrideHours} onChange={e => setOverrideHours(e.target.value)}
@@ -1943,7 +1943,7 @@ function OnCallTab() {
         <div className="px-4 py-3 border-b border-surface-800 flex items-center justify-between">
           <div>
             <span className="text-xs font-semibold text-white">SLA Windows &amp; Auto-Escalation</span>
-            <p className="text-2xs text-surface-500 mt-0.5">Response time targets per severity ? auto-escalation fires on the autonomous loop (every 5 min).</p>
+            <p className="text-2xs text-surface-500 mt-0.5">Response time targets per severity � auto-escalation fires on the autonomous loop (every 5 min).</p>
           </div>
           {slaSaved && <span className="text-2xs text-success flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> Saved</span>}
         </div>
@@ -1952,7 +1952,7 @@ function OnCallTab() {
         <div className="px-4 py-3 border-b border-surface-800 flex items-center justify-between">
           <div>
             <p className="text-xs font-medium text-white">Auto-escalate on SLA breach</p>
-            <p className="text-2xs text-surface-500 mt-0.5">Automatically notify contacts when incidents approach their SLA deadline ? no button press required.</p>
+            <p className="text-2xs text-surface-500 mt-0.5">Automatically notify contacts when incidents approach their SLA deadline � no button press required.</p>
           </div>
           <button
             onClick={() => role === 'admin' && setAutoEscEnabled(v => !v)}
@@ -2013,7 +2013,7 @@ function AccessTab() {
         </div>
         <div>
           <p className="text-sm font-semibold text-white">API Key Management</p>
-          <p className="text-xs text-surface-500 mt-1 max-w-xs">Scoped service tokens with audit logging ? arriving in v0.2</p>
+          <p className="text-xs text-surface-500 mt-1 max-w-xs">Scoped service tokens with audit logging � arriving in v0.2</p>
         </div>
         <div className="flex flex-wrap gap-2 justify-center mt-1">
           {['read:metrics', 'read:pods', 'write:incidents', 'read:alerts'].map(s => (
@@ -2074,7 +2074,7 @@ function AuditLogTab() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold text-white">Audit Log</h2>
-          <p className="text-xs text-surface-500 mt-0.5">All settings changes ? who, what, when. Append-only, stored in <code className="font-mono text-brand-300">audit.log.jsonl</code></p>
+          <p className="text-xs text-surface-500 mt-0.5">All settings changes � who, what, when. Append-only, stored in <code className="font-mono text-brand-300">audit.log.jsonl</code></p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={exportLog}
@@ -2092,13 +2092,13 @@ function AuditLogTab() {
       {/* Filter */}
       <div className="flex items-center gap-2">
         <input
-          type="text" placeholder="Filter by user?" value={userFilter}
+          type="text" placeholder="Filter by user�" value={userFilter}
           onChange={e => setUserFilter(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && applyFilter()}
           className="flex-1 bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-1.5 text-xs text-white outline-none transition-all"
         />
         <input
-          type="text" placeholder="Filter by action?" value={actionFilter}
+          type="text" placeholder="Filter by action�" value={actionFilter}
           onChange={e => setActionFilter(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && applyFilter()}
           className="flex-1 bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-1.5 text-xs text-white outline-none transition-all"
@@ -2111,7 +2111,7 @@ function AuditLogTab() {
 
       {loading && entries.length === 0 && (
         <div className="flex items-center gap-2 text-xs text-surface-500 py-4">
-          <Loader2 className="w-4 h-4 animate-spin" /> Loading audit log?
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading audit log�
         </div>
       )}
 
@@ -2143,7 +2143,7 @@ function AuditLogTab() {
                     <span className="text-2xs font-mono bg-brand-500/10 text-brand-400 px-1.5 py-0.5 rounded">{e.action}</span>
                   </td>
                   <td className="px-4 py-2.5 text-surface-500 font-mono text-2xs">
-                    {(e.fields ?? []).join(', ') || e.detail || '?'}
+                    {(e.fields ?? []).join(', ') || e.detail || '�'}
                   </td>
                 </tr>
               ))}
@@ -2156,7 +2156,7 @@ function AuditLogTab() {
       {/* Pagination */}
       {total > PAGE_SIZE && (
         <div className="flex items-center justify-between text-xs text-surface-500">
-          <span>{total} total entries ? page {page + 1} of {Math.ceil(total / PAGE_SIZE)}</span>
+          <span>{total} total entries � page {page + 1} of {Math.ceil(total / PAGE_SIZE)}</span>
           <div className="flex items-center gap-2">
             <button onClick={() => { const p = page - 1; setPage(p); load(p, userFilter) }} disabled={page === 0}
               className="px-2.5 py-1 rounded-lg bg-surface-800 border border-surface-700 hover:bg-surface-700 disabled:opacity-40 transition-all text-xs text-surface-300">
@@ -2233,14 +2233,14 @@ function AboutTab() {
         {probe ? (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {[
-              { label: 'Cluster',        value: activeCluster?.name ?? '?' },
-              { label: 'K8s Version',    value: probe.k8s.version ?? '?' },
-              { label: 'Platform',       value: probe.k8s.platform ?? '?' },
+              { label: 'Cluster',        value: activeCluster?.name ?? '�' },
+              { label: 'K8s Version',    value: probe.k8s.version ?? '�' },
+              { label: 'Platform',       value: probe.k8s.platform ?? '�' },
               { label: 'Nodes',          value: String(probe.k8s.nodeCount) },
               { label: 'Namespaces',     value: String(probe.k8s.namespaceCount) },
-              { label: 'Provider',       value: activeCluster?.provider ?? '?' },
-              { label: 'Region',         value: activeCluster?.region ?? '?' },
-              { label: 'Prometheus',     value: probe.prometheus.version ?? '?' },
+              { label: 'Provider',       value: activeCluster?.provider ?? '�' },
+              { label: 'Region',         value: activeCluster?.region ?? '�' },
+              { label: 'Prometheus',     value: probe.prometheus.version ?? '�' },
               { label: 'Prom Uptime',    value: fmtUptime(probe.prometheus.startTime) },
             ].map(f => (
               <div key={f.label} className="rounded-xl bg-surface-800 border border-surface-700 px-3 py-2">
@@ -2251,7 +2251,7 @@ function AboutTab() {
           </div>
         ) : (
           <div className="flex items-center gap-2 text-xs text-surface-500">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Probing cluster?
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Probing cluster�
           </div>
         )}
       </div>
@@ -2340,7 +2340,7 @@ function ProfileTab() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: sessionUser.id, name: form.name, email: form.email, team: form.team }),
         })
-      } catch { /* non-critical ? local save succeeded */ }
+      } catch { /* non-critical � local save succeeded */ }
     }
     setSaved(true)
     setTimeout(() => setSaved(false), 2500)
@@ -2381,7 +2381,7 @@ function ProfileTab() {
         <p className="text-2xs text-surface-500 mt-1">E.g. UTC, America/New_York, Asia/Kolkata</p>
       </div>
 
-      {/* Platform branding ? admin only */}
+      {/* Platform branding � admin only */}
       <div className="pt-3 border-t border-surface-800 space-y-4">
         <div className="flex items-center gap-2">
           <p className="text-xs font-semibold text-surface-400 uppercase tracking-wider">Platform Branding</p>
@@ -2395,9 +2395,9 @@ function ProfileTab() {
           <div key={f.key}>
             <label className="text-2xs font-medium text-surface-500 uppercase tracking-wider block mb-1.5">{f.label}</label>
             <input type="text" value={form[f.key as keyof typeof form]} placeholder={f.placeholder}
-              disabled={role !== 'admin'}
+              readOnly
               onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))}
-              className="w-full bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-2.5 text-sm text-white outline-none transition-all disabled:opacity-40 disabled:cursor-not-allowed" />
+              className="w-full bg-surface-900 border border-surface-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none transition-all opacity-60 cursor-not-allowed" />
           </div>
         ))}
         <div className="flex items-center gap-3 p-3 rounded-xl bg-surface-950 border border-surface-800">
@@ -2456,7 +2456,7 @@ function ProfileTab() {
             finally { setPwSaving(false) }
           }}
           className="flex items-center gap-1.5 px-4 py-2 bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-xl text-sm font-medium text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-          <Save className="w-3.5 h-3.5" /> {pwSaving ? 'Updating?' : 'Update Password'}
+          <Save className="w-3.5 h-3.5" /> {pwSaving ? 'Updating�' : 'Update Password'}
         </button>
       </div>
     </div>
@@ -2586,7 +2586,7 @@ function EditClusterModal({ cluster, onClose, onSaved }: {
                 ))}
               </select>
             </div>
-            {field('description', 'Description', 'Optional ? e.g. Primary production cluster')}
+            {field('description', 'Description', 'Optional � e.g. Primary production cluster')}
           </div>
 
           <div className="pt-1 pb-0.5">
@@ -2600,11 +2600,11 @@ function EditClusterModal({ cluster, onClose, onSaved }: {
           {field('grafanaUrl',      'Grafana URL',        'http://grafana:3000')}
 
           <div className="pt-1 pb-0.5">
-            <p className="text-2xs text-surface-500 uppercase tracking-wider font-medium">Couchbase (direct NodePort ? not via K8s proxy)</p>
+            <p className="text-2xs text-surface-500 uppercase tracking-wider font-medium">Couchbase (direct NodePort � not via K8s proxy)</p>
           </div>
           {field('couchbaseUrl',  'Couchbase URL',      'http://node-ip:18091')}
           {field('couchbaseUser', 'Couchbase User',     'Administrator')}
-          {field('couchbasePass', 'Couchbase Password', '????????', 'password')}
+          {field('couchbasePass', 'Couchbase Password', '��������', 'password')}
 
           <p className="text-2xs text-surface-600">
             Changing the K8s API URL will re-probe the cluster to update version and node count.
@@ -2621,7 +2621,7 @@ function EditClusterModal({ cluster, onClose, onSaved }: {
             disabled={saving}
             className="flex items-center gap-1.5 px-4 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-xl text-xs font-medium transition-colors"
           >
-            {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving?</> : <><Save className="w-3.5 h-3.5" /> Save Changes</>}
+            {saving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving�</> : <><Save className="w-3.5 h-3.5" /> Save Changes</>}
           </button>
         </div>
       </motion.div>
@@ -2705,7 +2705,7 @@ function ClustersTab() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold text-white">Kubernetes Clusters</h2>
-          <p className="text-xs text-surface-500 mt-0.5">Registered clusters ? switch active, remove, or add new</p>
+          <p className="text-xs text-surface-500 mt-0.5">Registered clusters � switch active, remove, or add new</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={load} className="p-1.5 rounded-lg hover:bg-surface-800 text-surface-400 hover:text-white transition-colors" title="Refresh">
@@ -2726,7 +2726,7 @@ function ClustersTab() {
 
       {loading ? (
         <div className="flex items-center gap-2 text-xs text-surface-500 py-4">
-          <Loader2 className="w-4 h-4 animate-spin" /> Loading clusters?
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading clusters�
         </div>
       ) : clusters.length === 0 ? (
         <div className="rounded-2xl bg-surface-900 border border-surface-800 p-8 text-center">
@@ -2765,7 +2765,7 @@ function ClustersTab() {
                   )}
                 </div>
                 <p className="text-2xs text-surface-500 mt-0.5">
-                  {c.provider} ? {c.region || '?'} ? v{c.version} ? {c.nodeCount} node{c.nodeCount !== 1 ? 's' : ''}
+                  {c.provider} � {c.region || '�'} � v{c.version} � {c.nodeCount} node{c.nodeCount !== 1 ? 's' : ''}
                 </p>
               </div>
               </div>
@@ -2821,7 +2821,7 @@ function SettingsInner() {
       return
     }
     if (_dirtySection && _dirtySection !== next) {
-      if (!window.confirm(`Unsaved changes in ${_dirtySection} ? leave without saving?`)) return
+      if (!window.confirm(`Unsaved changes in ${_dirtySection} � leave without saving?`)) return
     }
     setSection(next)
   }
@@ -2839,7 +2839,7 @@ function SettingsInner() {
               <h1 className="text-lg font-bold text-white flex items-center gap-2">
                 <Settings className="w-5 h-5 text-brand-400" /> Settings
               </h1>
-              <p className="text-xs text-surface-500 mt-0.5">Platform configuration ? connections ? integrations ? access</p>
+              <p className="text-xs text-surface-500 mt-0.5">Platform configuration � connections � integrations � access</p>
             </div>
             <span className={cn('text-2xs px-2 py-0.5 rounded-full border font-medium capitalize',
               role === 'admin'    ? 'text-brand-400 bg-brand-500/10 border-brand-500/20' :
@@ -2851,7 +2851,7 @@ function SettingsInner() {
           {role !== 'admin' && (
             <div className="mt-2 rounded-xl bg-surface-800 border border-surface-700 px-3 py-2 flex items-center gap-2 text-xs text-surface-400">
               <Shield className="w-3.5 h-3.5 flex-shrink-0" />
-              View-only mode ? contact an admin to change settings
+              View-only mode � contact an admin to change settings
             </div>
           )}
         </div>
@@ -2869,10 +2869,10 @@ function SettingsInner() {
         </div>
 
         <div className="flex flex-1 min-h-0">
-          {/* Sidebar ? hidden on mobile */}
+          {/* Sidebar � hidden on mobile */}
           <div className="hidden md:flex md:flex-col w-52 flex-shrink-0 border-r border-surface-800 p-3 space-y-0.5 overflow-y-auto">
             <div className="mb-2 relative">
-              <input type="text" placeholder="Search sections?" value={search}
+              <input type="text" placeholder="Search sections�" value={search}
                 onChange={e => setSearch(e.target.value)}
                 className="w-full bg-surface-800 border border-surface-700 focus:border-brand-500 rounded-lg px-3 py-1.5 text-xs text-white outline-none transition-all pr-6" />
               {search && (

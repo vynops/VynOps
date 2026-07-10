@@ -27,5 +27,5 @@ export default auth((req) => {
 
 export const config = {
   // Protect all routes except next-auth endpoints, static assets, and the login page itself
-  matcher: ['/((?!login|api/auth|_next/static|_next/image|favicon\\.ico).*)'],
+  matcher: ['/((?!login|api/auth|api/favicon|_next/static|_next/image|favicon\\.ico).*)'],
 }

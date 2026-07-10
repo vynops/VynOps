@@ -45,10 +45,26 @@ function LoginForm() {
     }
   }
 
-  const fillDemo = (cred: (typeof DEMO_CREDS)[0]) => {
+  const fillDemo = async (cred: (typeof DEMO_CREDS)[0]) => {
     setEmail(cred.email)
     setPassword(cred.password)
     setError('')
+    setLoading(true)
+    try {
+      const res = await signIn('credentials', {
+        email: cred.email,
+        password: cred.password,
+        redirect: false,
+      })
+      if (res?.error) {
+        setError('Demo login failed. Please try again.')
+      } else {
+        router.push(callbackUrl)
+        router.refresh()
+      }
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -161,19 +177,16 @@ function LoginForm() {
           </div>
 
           <p className="text-center text-xs text-surface-500">
-            Click a demo account to autofill credentials
+            Click a demo account to sign in instantly
           </p>
         </div>
 
         {/* Family footer */}
-        <div className="mt-8 flex flex-col items-center gap-3">
-          <p className="text-xs text-surface-600 tracking-widest uppercase">Part of the VynOps Suite</p>
-          <div className="flex items-center gap-2">
-            <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-brand-500/20 text-brand-300 border border-brand-500/30">VynOps</span>
-            <a href="http://localhost:3010" className="px-2.5 py-1 rounded-full text-xs font-medium text-surface-500 border border-surface-700 hover:text-surface-300 hover:border-surface-500 transition-colors">VynAI</a>
-            <a href="http://localhost:3020" className="px-2.5 py-1 rounded-full text-xs font-medium text-surface-500 border border-surface-700 hover:text-surface-300 hover:border-surface-500 transition-colors">VynCost</a>
-          </div>
-        </div>
+        <p className="text-center text-xs text-surface-600 mt-4">
+          Part of the{' '}
+          <a href="https://vynops.com" target="_blank" rel="noopener noreferrer"
+            className="text-cyan-500 hover:text-cyan-400 transition-colors">VynOps Suite</a>
+        </p>
       </div>
     </div>
   )
@@ -186,3 +199,4 @@ export default function LoginPage() {
     </Suspense>
   )
 }
+

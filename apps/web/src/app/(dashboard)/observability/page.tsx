@@ -922,7 +922,7 @@ function ObservabilityInner() {
                           const podName    = isPodRow ? row.name.split('/')[1] : ''
                           const nsName     = isPodRow ? row.name.split('/')[0] : (row.meta?.namespace ?? '')
                           const k8sHref    = isPodRow
-                            ? `/kubernetes?tab=Pods&pod=${encodeURIComponent(podName)}&ns=${encodeURIComponent(nsName)}`
+                            ? `/kubernetes?tab=Pods&pod=${encodeURIComponent(podName)}`
                             : null
                           return (
                             <div key={row.name}>
@@ -1010,7 +1010,7 @@ function ObservabilityInner() {
                                         {sr.value.toFixed(2)} {sr.unit}
                                       </span>
                                       {isPodRow && (
-                                        <Link href={`/kubernetes?tab=Pods&pod=${encodeURIComponent(podName)}&ns=${encodeURIComponent(nsName)}`}
+                                        <Link href={`/kubernetes?tab=Pods&pod=${encodeURIComponent(podName)}`}
                                           className="flex-shrink-0 text-surface-600 hover:text-cyan-400 transition-colors" title="Open pod in Kubernetes">
                                           <ExternalLink className="w-3 h-3" />
                                         </Link>
@@ -2374,7 +2374,7 @@ function ObservabilityInner() {
                               <ScrollText className="w-2.5 h-2.5" /> logs
                             </button>
                             <button
-                              onClick={e => { e.stopPropagation(); const ns = row.meta?.namespace ?? row.name.split('/')[0]; const pod = row.meta?.pod ?? row.name.split('/')[1] ?? row.name; window.location.href = `/kubernetes?tab=Pods&pod=${ns}/${pod}`; }}
+                              onClick={e => { e.stopPropagation(); const ns = row.meta?.namespace ?? row.name.split('/')[0]; const pod = row.meta?.pod ?? row.name.split('/')[1] ?? row.name; window.location.href = `/kubernetes?tab=Pods&pod=${pod}`; }}
                               className="px-1.5 py-0.5 rounded text-2xs bg-surface-700 hover:bg-surface-600 text-surface-300 flex items-center gap-1"
                             >
                               <ExternalLink className="w-2.5 h-2.5" /> k8s
@@ -2413,3 +2413,4 @@ export default function ObservabilityPage() {
     </Suspense>
   )
 }
+
