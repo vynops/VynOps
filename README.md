@@ -261,7 +261,7 @@ npm run dev
 # → http://YOUR-SERVER-IP:3030
 ```
 
-> **Port conflict:** If port 3000 is taken, set `PORT=3001` in `.env.local` and update `NEXTAUTH_URL` to match.
+> **Port conflict:** If port 3030 is taken, set `PORT=4030` in `.env.local` and update `NEXTAUTH_URL` to match.
 
 ---
 
