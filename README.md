@@ -128,9 +128,8 @@ Built on **Next.js 15 App Router** with a real-time custom WebSocket server, Vyn
 
 ### 🔔 Notifications
 - **Slack** — Rich block kit messages with severity routing
-- **PagerDuty** — Events API v2 with dedup keys
 - **Email / SMTP** — Alert emails with HTML templates
-- **Configurable routing** — critical → PagerDuty + Slack, warning → Slack, info → Slack
+- **Configurable routing** — critical → Slack, warning → Slack, info → Slack
 - **30-minute cooldown** — Deduplication prevents alert fatigue
 - **On-call schedules** — Built-in on-call rotation management
 
@@ -335,7 +334,6 @@ GRAFANA_URL=http://127.0.0.1:8001/api/v1/namespaces/monitoring/services/monitori
 | Variable | Description |
 |----------|-------------|
 | `SLACK_WEBHOOK_URL` | Incoming webhook URL from [Slack API](https://api.slack.com/messaging/webhooks) |
-| `PAGERDUTY_ROUTING_KEY` | Events API v2 routing key (32-char string) |
 | `SMTP_HOST` | SMTP hostname, e.g. `smtp.gmail.com` |
 | `SMTP_PORT` | SMTP port, e.g. `587` |
 | `SMTP_USER` | SMTP username / email address |
@@ -427,11 +425,11 @@ VynOps sends notifications automatically when critical events occur.
 | Event | Default channels | Cooldown |
 |-------|-----------------|---------|
 | Auto-heal (deployment restarted) | Slack | None |
-| Critical incidents (health < 60) | PagerDuty + Slack | 30 min |
+| Critical incidents (health < 60) | Slack | 30 min |
 | Deployment failures | Slack | 30 min |
-| Node not ready | PagerDuty + Slack | 30 min |
+| Node not ready | Slack | 30 min |
 | High restart rate | Slack | 30 min |
-| Disk > 80% | Slack / PagerDuty | 30 min |
+| Disk > 80% | Slack | 30 min |
 | SLA at risk | Slack | 30 min |
 
 **Configure routing** via Settings → Notifications:
@@ -445,8 +443,6 @@ VynOps sends notifications automatically when critical events occur.
   "notify_cooldown_minutes": 30
 }
 ```
-
----
 
 ## Security
 
