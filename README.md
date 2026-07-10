@@ -148,11 +148,11 @@ Built on **Next.js 15 App Router** with a real-time custom WebSocket server, Vyn
 │                  Next.js 15 App Router                          │
 │  server.mjs (custom Node.js — adds WebSocket for pod exec)      │
 │                                                                 │
-│  /api/k8s/*      → kubectl proxy → Kubernetes API              │
-│  /api/ai/*       → Groq (llama-4-scout)                        │
+│  /api/k8s/*      → kubectl proxy → Kubernetes API               │
+│  /api/ai/*       → Groq (llama-4-scout)                         │
 │  /api/incidents  → Prometheus ALERTS query                      │
 │  /api/cloud/*    → K8s + Prometheus resource/cost queries       │
-│  /api/settings/* → data/*.json (disk-backed store)             │
+│  /api/settings/* → data/*.json (disk-backed store)              │
 └──────┬──────────────┬───────────────┬────────────────┬──────────┘
        │              │               │                │
   kubectl proxy   Prometheus       Groq API        data/*.json
@@ -189,7 +189,6 @@ Built on **Next.js 15 App Router** with a real-time custom WebSocket server, Vyn
 | Grafana | Embedded dashboards |
 | Alertmanager | Alert silencing/inhibition |
 | Slack | Push notifications |
-| PagerDuty | On-call paging |
 | SMTP | Email alerts |
 
 ---
@@ -213,7 +212,7 @@ cp apps/web/.env.local.example apps/web/.env.local
 Edit `apps/web/.env.local` — minimum required values:
 ```env
 AUTH_SECRET=<output of: openssl rand -base64 32>
-NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_URL=http://localhost:3030
 GROQ_API_KEY=gsk_...          # free at https://console.groq.com
 ```
 
@@ -223,14 +222,14 @@ kubectl proxy --port=8001
 
 # 5. Start VynOps
 npm run dev
-# → http://localhost:3000
+# → http://localhost:3030
 ```
 
 **Default credentials:**
 | Field | Value |
 |-------|-------|
 | Email | `admin@vynops.local` |
-| Password | `admin123` |
+| Password | `changeme` |
 
 > ⚠️ Change the default password immediately via **Settings → Users**.
 
@@ -259,7 +258,7 @@ kubectl proxy --port=8001 --address=127.0.0.1 &
 
 ```bash
 npm run dev
-# → http://YOUR-SERVER-IP:3000
+# → http://YOUR-SERVER-IP:3030
 ```
 
 > **Port conflict:** If port 3000 is taken, set `PORT=3001` in `.env.local` and update `NEXTAUTH_URL` to match.
@@ -349,7 +348,7 @@ Fine-tune notification behaviour via **Settings → Notifications** in the UI (s
 
 | Variable | Description |
 |----------|-------------|
-| `PORT` | HTTP port (default: `3000`) |
+| `PORT` | HTTP port (default: `3030`) |
 | `ALLOWED_DEV_ORIGINS` | Comma-separated IPs/hostnames allowed to access the dev server remotely. Leave unset for local development. |
 | `CRON_SECRET` | Secret for internal cron jobs. Auto-generated at startup if not set. |
 
@@ -439,7 +438,7 @@ VynOps sends notifications automatically when critical events occur.
 ```json
 {
   "alert_routing": {
-    "critical": ["pagerduty", "slack"],
+    "critical": ["slack"],
     "warning": ["slack"],
     "info": ["slack"]
   },
@@ -641,53 +640,6 @@ Every API request can be routed to a specific cluster by including these headers
 | Low memory / OOM during build | Node.js heap too small | Already handled: `--max-old-space-size=1536` in `npm run dev` |
 | `EACCES` on `data/` writes | Linux file permissions | `chmod 755 apps/web/data` |
 | `sharp` native module errors | Platform mismatch (Windows → Linux) | `npm install` on the Linux machine (rebuilds natively) |
-
----
-
-## Testing
-
-VynOps ships with a three-layer test suite covering 65+ API endpoints and 80+ UI scenarios.
-
-### Smoke check — pre-deploy API health (~15 seconds)
-
-```bash
-cd apps/web
-node smoke-check.mjs                        # localhost:3000
-node smoke-check.mjs https://vynops.online  # production
-```
-
-Hits every API module (auth, incidents, K8s, observability, AI, stream, settings, all pages). Exits non-zero on failure — safe to wire into CI.
-
-### End-to-end tests — full browser coverage (~5–10 minutes)
-
-```bash
-cd apps/web
-npm run test:e2e           # headless Chromium
-npm run test:e2e:headed    # watch tests run in the browser
-npm run test:e2e:ui        # interactive Playwright UI
-npm run test:all           # smoke check + E2E together
-```
-
-| Suite | Coverage |
-|---|---|
-| `01-auth.spec.ts` | Login, wrong creds, role-based access, sign-out, redirect |
-| `02-dashboard.spec.ts` | KPI cards, health score, service table, AI insights |
-| `03-observability.spec.ts` | Metrics, Logs (filter/search/expand), Traces waterfall, Events |
-| `04-infrastructure.spec.ts` | Clusters, Nodes expand detail, Storage PVs, Network, Databases |
-| `05-kubernetes.spec.ts` | Pod list, CrashLoopBackOff highlight, search, Events feed |
-| `06-incidents.spec.ts` | List filters, war room (RCA, blast radius, timeline, quick actions) |
-| `07-deployments.spec.ts` | BROKE IT badge, change diff, risk score, correlation banner |
-| `08-ai-copilot.spec.ts` | Chat send, streaming response, suggested prompt chips |
-| `09-security-automation-cloud.spec.ts` | CIS findings, one-click fix, runbooks, cloud providers |
-| `10-navigation.spec.ts` | Sidebar, Command Palette, time range, env switcher, AI panel |
-
-### Unit tests (Vitest)
-
-```bash
-npm run test            # single pass
-npm run test:watch      # watch mode
-npm run test:coverage   # with coverage report
-```
 
 ---
 
