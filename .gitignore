@@ -90,3 +90,8 @@ validate.ps1
 tsc-errors*.txt
 tsc*.txt
 api-auth-matrix.tsv
+
+# Editor / temporary backup files
+*-
+*.ts1
+*.tsx1

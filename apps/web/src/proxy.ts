@@ -26,6 +26,7 @@ export default auth((req) => {
 })
 
 export const config = {
-  // Protect all routes except next-auth endpoints, static assets, and the login page itself
-  matcher: ['/((?!login|api/auth|api/favicon|_next/static|_next/image|favicon\\.ico).*)'],
+  // Protect all routes except next-auth endpoints, static assets, the login page,
+  // and the Alertmanager webhook receiver (called by the cluster, not a browser session).
+  matcher: ['/((?!login|api/auth|api/favicon|api/alerts/webhook|_next/static|_next/image|favicon\\.ico).*)'],
 }

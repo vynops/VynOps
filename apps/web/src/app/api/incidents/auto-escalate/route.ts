@@ -6,7 +6,6 @@ import { join }                                          from 'path'
 import type { OnCallSchedule, OnCallMember }             from '@/app/api/settings/oncall/shared'
 import { notifyEscalation }                              from '@/lib/notify'
 import { readConfig }                                    from '@/app/api/settings/config/shared'
-import { assertOperator }                                from '@/lib/rbac'
 
 const ONCALL_FILE = join(process.cwd(), 'data', 'oncall.json')
 const BASE        = (process.env.NEXTAUTH_URL ?? 'http://localhost:3000').replace(/\/$/, '')
@@ -36,14 +35,7 @@ function readSchedules(): OnCallSchedule[] {
  * Gated by the `auto_escalate_enabled` runtime config flag.
  * Only fires one level per incident per cycle.
  */
-export async function POST(req: Request) {
-  const cronSecret = process.env.CRON_SECRET
-  const isInternal = !!(cronSecret && req.headers.get('x-internal-secret') === cronSecret)
-  if (!isInternal) {
-    const deny = await assertOperator()
-    if (deny) return deny
-  }
-
+export async function POST() {
   const cfg = readConfig()
   if (!cfg.auto_escalate_enabled) {
     return NextResponse.json({ ok: true, skipped: true, reason: 'Auto-escalation disabled in settings' })
@@ -58,7 +50,7 @@ export async function POST(req: Request) {
   const levels  = primary.escalationLevels
   const members = primary.members
 
-  // Build cumulative delay thresholds ? level i fires when elapsed >= cumDelays[i]
+  // Build cumulative delay thresholds — level i fires when elapsed >= cumDelays[i]
   const cumDelays: number[] = []
   let running = 0
   for (const lvl of levels) {
@@ -121,7 +113,7 @@ export async function POST(req: Request) {
       contactName:   contact.name,
       contactEmail:  contact.email,
       contactSlack:  contact.slack,
-      url:           `${BASE}/incidents/${inc.id}`,
+      url:           `${BASE}/incidents?id=${inc.id}`,
       autoTriggered: true,
       slaInfo,
     })
@@ -138,7 +130,7 @@ export async function POST(req: Request) {
       ts:          nowIso,
       type:        'escalation',
       title:       `Auto-escalated to L${nextLevel}`,
-      description: `${levelDesc} ? ${contact.name} (${contact.email}) notified ? ${slaInfo}${slackSent ? ' ? Slack ?' : ''}`,
+      description: `${levelDesc} — ${contact.name} (${contact.email}) notified · ${slaInfo}${slackSent ? ' · Slack ✓' : ''}`,
       actor:       'system',
     })
     manualStore.set(inc.id, mutableInc)

@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -112,8 +113,9 @@ function SlaTag({ deadline, breached }: { deadline: string; breached: boolean })
 
 // -- Main page -------------------------------------------------
 
-export default function IncidentsPage() {
+function IncidentsPage() {
   const { activeCluster, timeRange } = useDashboardStore()
+  const searchParams = useSearchParams()
   const [stateFilter, setStateFilter] = useState<string>('all')
   const [sevFilter,   setSevFilter]   = useState<string>('all')
   const [search,      setSearch]      = useState('')
@@ -132,6 +134,14 @@ export default function IncidentsPage() {
   const { data, loading, error, isLive, refresh } = useLiveData<ApiResponse>(
     '/api/incidents', EMPTY, undefined, 30_000,
   )
+
+  // Auto-select incident from ?id= query param (e.g. from Slack notification link)
+  useEffect(() => {
+    const targetId = searchParams.get('id')
+    if (!targetId || !data.incidents.length) return
+    const match = data.incidents.find(inc => inc.id === targetId)
+    if (match) setSelected(match)
+  }, [searchParams, data.incidents])
 
   const { data: oncallData } = useLiveData(
     '/api/settings/oncall',
@@ -612,5 +622,13 @@ export default function IncidentsPage() {
         )}
       </AnimatePresence>
     </div>
+  )
+}
+
+export default function IncidentsPageWrapper() {
+  return (
+    <Suspense fallback={null}>
+      <IncidentsPage />
+    </Suspense>
   )
 }

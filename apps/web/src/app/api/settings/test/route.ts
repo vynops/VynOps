@@ -132,8 +132,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'Enter a valid email address first' })
     }
     const runtimeCfg = readConfig()
-    const smtpHost = runtimeCfg.smtp_host || process.env.SMTP_HOST || ''
-    const smtpPort = runtimeCfg.smtp_port || parseInt(process.env.SMTP_PORT ?? '587', 10)
+    // Prefer values sent directly from the form (works before Save); fall back to saved config, then env
+    const smtpHost = (body.smtpHost as string | undefined)
+      ?? (runtimeCfg.smtp_host !== undefined ? runtimeCfg.smtp_host : process.env.SMTP_HOST)
+      ?? ''
+    const smtpPort = (typeof body.smtpPort === 'number' ? body.smtpPort : undefined)
+      ?? runtimeCfg.smtp_port
+      ?? parseInt(process.env.SMTP_PORT ?? '587', 10)
     if (!smtpHost) {
       return NextResponse.json({
         ok: false,

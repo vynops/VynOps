@@ -3,8 +3,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { readConfig } from '@/app/api/settings/config/shared'
 
-// SLA window (minutes) per severity ? reads runtime config, falls back to defaults
-function getSlaMinutes(): Record<string, number> {
+// SLA window (minutes) per severity — reads runtime config, falls back to defaults
+export function getSlaMinutes(): Record<string, number> {
   const cfg = readConfig()
   return {
     critical: cfg.sla_minutes_critical ?? 30,
@@ -168,7 +168,7 @@ export function persistStore(): void {
   saveStore(manualStore)
 }
 
-const SEV_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0, none: 0 }
+export const SEV_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0, none: 0 }
 
 function buildIncident(
   groupKey: string,
@@ -206,7 +206,7 @@ function buildIncident(
       ts: new Date(slaDeadlineMs).toISOString(),
       type: 'escalation',
       title: 'SLA deadline exceeded',
-      description: `${severity.toUpperCase()} incidents have a ${slaMins < 60 ? slaMins + '-min' : Math.round(slaMins / 60) + '-hour'} SLA ? now ${fmtMins(durationMins - slaMins)} overdue`,
+      description: `${severity.toUpperCase()} incidents have a ${slaMins < 60 ? slaMins + '-min' : Math.round(slaMins / 60) + '-hour'} SLA — now ${fmtMins(durationMins - slaMins)} overdue`,
       severity: 'critical',
     })
   }
@@ -218,7 +218,7 @@ function buildIncident(
     title: groupTitle,
     description: `${alerts.length} related ${severity}-severity alert${alerts.length > 1 ? 's' : ''} detected by Prometheus have been firing since ${new Date(minStartMs).toUTCString()}. Affected component: ${service}.`,
     severity,
-    state: 'open',
+    state: 'investigating',
     owner: 'Unassigned',
     team: 'Platform Engineering',
     service,

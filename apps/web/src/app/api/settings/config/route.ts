@@ -5,7 +5,8 @@ import {
   readConfig,
   writeConfig,
   appendAuditLog,
-  RuntimeConfig,
+  appendNotifLog,
+  type RuntimeConfig,
 } from '@/app/api/settings/config/shared'
 
 // Fields whose full value must be masked in GET responses
@@ -17,7 +18,7 @@ function maskSecret(value: string): string {
   return `****${value.slice(-4)}`
 }
 
-// ?? GET ? load merged config (env fallbacks, secrets masked) ??
+// ── GET — load merged config (env fallbacks, secrets masked) ──
 export async function GET() {
   const session = await auth()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -43,27 +44,6 @@ export async function GET() {
     smtp_user:               stored.smtp_user  ?? process.env.SMTP_USER  ?? '',
     smtp_pass:               stored.smtp_pass  ?? process.env.SMTP_PASS  ?? '',
     smtp_from:               stored.smtp_from  ?? process.env.SMTP_FROM  ?? '',
-    // Autonomous healing
-    autonomous_enabled:              stored.autonomous_enabled              ?? false,
-    autonomous_dry_run:              stored.autonomous_dry_run              ?? true,
-    autonomous_confidence_threshold: stored.autonomous_confidence_threshold ?? 80,
-    autonomous_allowed_actions:      stored.autonomous_allowed_actions      ?? [],
-    // FinOps rates
-    finops_cpu_per_core_hr:    stored.finops_cpu_per_core_hr    ?? 0.048,
-    finops_mem_per_gib_hr:     stored.finops_mem_per_gib_hr     ?? 0.006,
-    finops_storage_per_gib_mo: stored.finops_storage_per_gib_mo ?? 0.05,
-    // SLA windows
-    sla_minutes_critical: stored.sla_minutes_critical ?? 30,
-    sla_minutes_high:     stored.sla_minutes_high     ?? 120,
-    sla_minutes_medium:   stored.sla_minutes_medium   ?? 480,
-    sla_minutes_low:      stored.sla_minutes_low      ?? 2880,
-    auto_escalate_enabled: stored.auto_escalate_enabled ?? false,
-    auto_runbook_enabled:  stored.auto_runbook_enabled  ?? false,
-    auto_runbook_allowed:  stored.auto_runbook_allowed  ?? {},
-    // AI remediation plans
-    auto_plan_enabled:      stored.auto_plan_enabled      ?? false,
-    auto_execute_plans:     stored.auto_execute_plans     ?? false,
-    auto_execute_threshold: stored.auto_execute_threshold ?? 85,
   }
 
   // Mask secrets before sending to client
@@ -76,14 +56,14 @@ export async function GET() {
   const source: Record<string, 'env' | 'runtime' | 'unset'> = {}
   for (const key of Object.keys(merged)) {
     const k = key as keyof RuntimeConfig
-    if (stored[k])              source[key] = 'runtime'
-    else if (merged[k])         source[key] = 'env'
-    else                        source[key] = 'unset'
+    if (stored[k] !== undefined) source[key] = 'runtime'
+    else if (merged[k])          source[key] = 'env'
+    else                         source[key] = 'unset'
   }
 
   return NextResponse.json({ config: safe, source })
 }
-// ?? Zod validation schema ?????????????????????????????????????
+// ── Zod validation schema ─────────────────────────────────────
 const configBodySchema = z.object({
   slack_webhook_url:       z.string().max(500).optional(),
   alertmanager_url:        z.string().max(500).optional(),
@@ -116,14 +96,14 @@ const configBodySchema = z.object({
   auto_execute_plans:        z.boolean().optional(),
   auto_execute_threshold:    z.number().int().min(50).max(99).optional(),
 }).partial()
-// ?? POST ? save config to runtime file ???????????????????????
+// ── POST — save config to runtime file ───────────────────────
 export async function POST(req: Request) {
   const session = await auth()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   // Only admins can change platform config
   if ((session.user as any)?.role !== 'admin') {
-    return NextResponse.json({ error: 'Forbidden ? admin role required' }, { status: 403 })
+    return NextResponse.json({ error: 'Forbidden — admin role required' }, { status: 403 })
   }
 
   const body: Partial<RuntimeConfig> = await req.json()
@@ -135,7 +115,7 @@ export async function POST(req: Request) {
 
   const existing = readConfig()
 
-  // Merge ? skip sentinel values (unchanged masked fields)
+  // Merge — skip sentinel values (unchanged masked fields)
   const updated: RuntimeConfig = { ...existing }
 
   const fields: (keyof RuntimeConfig)[] = [
@@ -148,8 +128,9 @@ export async function POST(req: Request) {
     const v = body[field] as string | undefined
     if (v === undefined) continue
     if (v === SENTINEL)  continue
-    if (v === '') { delete updated[field]; changedFields.push(field) }
-    else { (updated as any)[field] = v; changedFields.push(field) }
+    // Store '' explicitly so env-var fallback is blocked (null-coalescing ?? skips only null/undefined)
+    ;(updated as any)[field] = v
+    changedFields.push(field)
   }
 
   if (body.notify_on               !== undefined) { updated.notify_on               = body.notify_on;               changedFields.push('notify_on') }
@@ -158,17 +139,17 @@ export async function POST(req: Request) {
   if (body.notify_cooldown_minutes !== undefined) { updated.notify_cooldown_minutes = body.notify_cooldown_minutes; changedFields.push('notify_cooldown_minutes') }
   if (body.last_tested             !== undefined) { updated.last_tested             = body.last_tested             }
 
-  // SMTP string fields
+  // SMTP string fields — store '' explicitly to shadow env-var fallbacks
   for (const field of ['smtp_host', 'smtp_user', 'smtp_from'] as const) {
     const v = body[field]
     if (v === undefined) continue
     if (v === SENTINEL)  continue
-    if (v === '') { delete updated[field]; changedFields.push(field) }
-    else { updated[field] = v; changedFields.push(field) }
+    updated[field] = v
+    changedFields.push(field)
   }
   if (body.smtp_pass !== undefined && body.smtp_pass !== SENTINEL) {
-    if (body.smtp_pass === '') { delete updated.smtp_pass; changedFields.push('smtp_pass') }
-    else { updated.smtp_pass = body.smtp_pass; changedFields.push('smtp_pass') }
+    updated.smtp_pass = body.smtp_pass
+    changedFields.push('smtp_pass')
   }
   if (body.smtp_port !== undefined) { updated.smtp_port = body.smtp_port; changedFields.push('smtp_port') }
 

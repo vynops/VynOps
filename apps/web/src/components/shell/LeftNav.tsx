@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard, Activity, Server, Boxes, Cloud, Siren,
-  GitFork, Bot, Zap, ShieldAlert, BarChart3,
+  GitFork, Bot, Zap, ShieldAlert, BarChart3, Bell,
   Settings, ChevronLeft, ChevronRight, Rocket, Menu, X as CloseX, BrainCircuit,
 } from 'lucide-react'
 import { useDashboardStore } from '@/store'
@@ -19,6 +19,7 @@ const NAV_ITEMS = [
   { id: 'kubernetes',      label: 'Kubernetes',    href: '/kubernetes',             icon: Boxes },
   { id: 'cloud',           label: 'Cloud',         href: '/cloud',                  icon: Cloud },
   { id: 'deployments',     label: 'Deployments',   href: '/deployments',            icon: Rocket },
+  { id: 'alerts',          label: 'Alerts',        href: '/alerts',                 icon: Bell,   badge: 'alerts' },
   { id: 'incidents',       label: 'Incidents',     href: '/incidents',              icon: Siren,  badge: 'incidents' },
   { id: 'topology',        label: 'Topology',      href: '/topology',               icon: GitFork },
   { id: 'ai-copilot',      label: 'AI Copilot',    href: '/ai-copilot',             icon: Bot,           highlight: true },
@@ -62,7 +63,8 @@ export default function LeftNav() {
   const openIncidents = incidents.filter(i => i.state !== 'resolved').length
 
   const getBadge = (id: string) => {
-    if (id === 'incidents') return openIncidents > 0 ? openIncidents : undefined
+    if (id === 'alerts')       return firingAlerts > 0 ? firingAlerts : undefined
+    if (id === 'incidents')    return openIncidents > 0 ? openIncidents : undefined
     if (id === 'observability') return firingAlerts > 0 ? firingAlerts : undefined
     return undefined
   }

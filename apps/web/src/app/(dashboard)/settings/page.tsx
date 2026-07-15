@@ -582,7 +582,6 @@ const SENTINEL = '__UNCHANGED__'
 const NOTIF_CHANNELS = [
   { id: 'slack_webhook_url',     label: 'Slack Webhook URL',       placeholder: 'https://hooks.slack.com/services/...', env: 'SLACK_WEBHOOK_URL',     testAction: 'slack',        masked: false },
   { id: 'alertmanager_url',      label: 'Alertmanager URL',        placeholder: 'http://your-host:9093',                env: 'ALERTMANAGER_URL',      testAction: 'alertmanager', masked: false },
-  { id: 'pagerduty_routing_key', label: 'PagerDuty Routing Key',   placeholder: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',      env: 'PAGERDUTY_ROUTING_KEY', testAction: 'pagerduty',    masked: true  },
   { id: 'alert_email',           label: 'Alert Email (SMTP To)',   placeholder: 'oncall@your-org.com',                  env: 'ALERT_EMAIL',           testAction: 'email',        masked: false },
   { id: 'alert_webhook_url',     label: 'Generic Webhook URL',     placeholder: 'https://your-endpoint/alert',          env: 'ALERT_WEBHOOK_URL',     testAction: 'webhook',      masked: false },
 ]
@@ -702,7 +701,14 @@ function NotificationsTab() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           ch.testAction === 'pagerduty' ? { action: 'pagerduty', routingKey: url }
-          : ch.testAction === 'email'  ? { action: 'email', email: url }
+          : ch.testAction === 'email'  ? {
+              action: 'email', email: url,
+              // Pass SMTP config from current form so test works before saving
+              smtpHost: values['smtp_host'] ?? '',
+              smtpPort: parseInt(values['smtp_port'] ?? '587', 10) || 587,
+              smtpUser: values['smtp_user'] ?? '',
+              smtpPass: values['smtp_pass'] ?? '',
+            }
           : { action: ch.testAction, url }
         ),
       })
@@ -913,6 +919,7 @@ function NotificationsTab() {
                     value={values[f.id] ?? ''}
                     onChange={e => { setValues(v => ({ ...v, [f.id]: e.target.value })); setDirty(true) }}
                     placeholder={f.placeholder}
+                    autoComplete={f.masked ? 'new-password' : 'off'}
                     className="w-full bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-2.5 text-sm text-white font-mono outline-none transition-all pr-9"
                   />
                   {f.masked && (
@@ -928,11 +935,23 @@ function NotificationsTab() {
           <div className="pt-1 flex items-center gap-3">
             <button
               onClick={async () => {
+                const destEmail = values['alert_email'] || values['smtp_user'] || ''
+                if (!destEmail) {
+                  setTestRes(prev => ({ ...prev, smtp_test: { ok: false, msg: '✗ Set Alert Email or SMTP Username first' } }))
+                  return
+                }
                 setTesting(t => ({ ...t, smtp_test: true }))
                 try {
                   const r = await fetch('/api/settings/test', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'email', email: values.alert_email }),
+                    body: JSON.stringify({
+                      action: 'email',
+                      email: destEmail,
+                      smtpHost: values['smtp_host'] ?? '',
+                      smtpPort: parseInt(values['smtp_port'] ?? '587', 10) || 587,
+                      smtpUser: values['smtp_user'] ?? '',
+                      smtpPass: values['smtp_pass'] ?? '',
+                    }),
                   })
                   const d = await r.json()
                   setTestRes(prev => ({ ...prev, smtp_test: { ok: d.ok, msg: d.ok ? `? Test email sent � ${d.latencyMs}ms` : `? ${d.error ?? d.message}` } }))
@@ -2839,7 +2858,7 @@ function SettingsInner() {
               <h1 className="text-lg font-bold text-white flex items-center gap-2">
                 <Settings className="w-5 h-5 text-brand-400" /> Settings
               </h1>
-              <p className="text-xs text-surface-500 mt-0.5">Platform configuration � connections � integrations � access</p>
+              <p className="text-xs text-surface-500 mt-0.5">Platform configuration · connections · integrations · access</p>
             </div>
             <span className={cn('text-2xs px-2 py-0.5 rounded-full border font-medium capitalize',
               role === 'admin'    ? 'text-brand-400 bg-brand-500/10 border-brand-500/20' :
@@ -2929,5 +2948,4 @@ export default function SettingsPage() {
     </Suspense>
   )
 }
-
 
