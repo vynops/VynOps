@@ -7,7 +7,7 @@ import { Command } from 'cmdk'
 import {
   Search, LayoutDashboard, Activity, Server, Boxes, Siren,
   Bot, Zap, ShieldAlert, BarChart3, GitFork, Cloud, X,
-  ArrowRight, Hash, AlertTriangle, Bell,
+  ArrowRight, Hash, AlertTriangle, Bell, DollarSign,
 } from 'lucide-react'
 import { useDashboardStore } from '@/store'
 import { cn } from '@/lib/utils'
@@ -23,7 +23,7 @@ const NAV_COMMANDS = [
   { id: 'nav-automation',     group: 'Navigation',  label: 'Go to Automation Studio',   href: '/dashboard/automation',       icon: Zap },
   { id: 'nav-security',       group: 'Navigation',  label: 'Go to Security',            href: '/dashboard/security',         icon: ShieldAlert },
   { id: 'nav-analytics',      group: 'Navigation',  label: 'Go to Analytics',           href: '/dashboard/analytics',        icon: BarChart3 },
-  { id: 'nav-cloud',          group: 'Navigation',  label: 'Go to Cloud',               href: '/dashboard/cloud',            icon: Cloud },
+  { id: 'nav-finops',         group: 'Navigation',  label: 'Go to FinOps',               href: '/dashboard/finops',          icon: DollarSign },
 ]
 
 const AI_QUERIES = [

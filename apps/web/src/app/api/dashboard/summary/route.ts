@@ -227,7 +227,7 @@ export async function GET(req: Request) {
       title: `CPU utilization: ${cpuPctVal}% — cluster over-provisioned`,
       description: `Only ${cpuPctVal}% of cluster CPU is being used. Review resource requests to reduce waste and lower compute costs.`,
       severity: cpuPctVal < 10 ? 'high' : 'medium',
-      action: '/cloud',
+      action: '/finops',
     })
   } else if (cpuPctVal > 80) {
     insights.push({
@@ -257,7 +257,7 @@ export async function GET(req: Request) {
       title: `Memory utilization: ${memPctVal}% — significant headroom available`,
       description: `${100 - memPctVal}% of memory is unused. You can increase pod density or reduce node memory allocation.`,
       severity: 'medium',
-      action: '/cloud',
+      action: '/finops',
     })
   } else if (memPctVal > 85) {
     insights.push({
