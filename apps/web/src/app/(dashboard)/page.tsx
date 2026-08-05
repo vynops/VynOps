@@ -419,25 +419,29 @@ export default function ExecutiveDashboard() {
 
       {/* ── KPI strip ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        <motion.div custom={0} initial="hidden" animate="visible" variants={fadeUp} className="lg:col-span-2">
+        <motion.div key="sys-health" custom={0} initial="hidden" animate="visible" variants={fadeUp}>
+          <KPICard
+            label="System Health"
+            value={health.score}
+            unit="%"
+            status={health.score >= 90 ? 'healthy' : health.score >= 70 ? 'degraded' : 'critical'}
+            icon={<Activity className="w-4 h-4" />}
+            pulse={health.score < 90}
+            trend={0}
+            trendLabel="real-time"
+            tooltip={[
+              { label: 'Nodes Ready',      value: `${health._debug?.nodes.ready ?? '?'} / ${health._debug?.nodes.total ?? '?'}`,   color: (health._debug?.nodes.ready === health._debug?.nodes.total ? 'success' : 'danger') as never },
+              { label: 'Pods Running',     value: `${health._debug?.pods.running ?? '?'} / ${health._debug?.pods.workload ?? '?'}`, color: ((health._debug?.pods.running ?? 0) === (health._debug?.pods.workload ?? 0) ? 'success' : 'warning') as never },
+              { label: 'CPU Usage',        value: health._debug?.cpuPct != null ? `${health._debug.cpuPct}%` : '—',            color: ((health._debug?.cpuPct ?? 0) > 80 ? 'danger' : (health._debug?.cpuPct ?? 0) > 60 ? 'warning' : 'success') as never },
+              { label: 'Memory Usage',     value: health._debug?.memPct != null ? `${health._debug.memPct}%` : '—',            color: ((health._debug?.memPct ?? 0) > 80 ? 'danger' : (health._debug?.memPct ?? 0) > 60 ? 'warning' : 'success') as never },
+              { label: 'Change Fail Rate', value: `${health.changeFailureRate}%`,                                                   color: (health.changeFailureRate === 0 ? 'success' : 'danger') as never },
+            ]}
+          />
+        </motion.div>
+        <motion.div custom={1} initial="hidden" animate="visible" variants={fadeUp} className="lg:col-span-2">
           <HealthRing score={platScore} breakdown={platBreakdown} podHealth={podHealth} nodeHealth={nodeHealth} sla={incData.metrics.slaCompliancePct ?? 100} velocity={sum.dora.recentDeploys > 0 ? sum.dora.successRate : 100} criticalOpen={criticalOpen} highOpen={highOpen} />
         </motion.div>
         {[
-          {
-            label: 'System Health',
-            value: health.score, unit: '%',
-            status: health.score >= 90 ? 'healthy' : health.score >= 70 ? 'degraded' : 'critical',
-            icon: <Activity className="w-4 h-4" />,
-            pulse: health.score < 90,
-            trend: 0, trendLabel: 'real-time',
-            tooltip: [
-              { label: 'Nodes Ready',      value: `${health._debug?.nodes.ready ?? '?'} / ${health._debug?.nodes.total ?? '?'}`,   color: (health._debug?.nodes.ready === health._debug?.nodes.total ? 'success' : 'danger') as never },
-              { label: 'Pods Running',     value: `${health._debug?.pods.running ?? '?'} / ${health._debug?.pods.workload ?? '?'}`, color: ((health._debug?.pods.running ?? 0) === (health._debug?.pods.workload ?? 0) ? 'success' : 'warning') as never },
-              { label: 'CPU Usage',        value: health._debug?.cpuPct != null ? `${health._debug.cpuPct}%` : '\u2014',                color: ((health._debug?.cpuPct ?? 0) > 80 ? 'danger' : (health._debug?.cpuPct ?? 0) > 60 ? 'warning' : 'success') as never },
-              { label: 'Memory Usage',     value: health._debug?.memPct != null ? `${health._debug.memPct}%` : '\u2014',                color: ((health._debug?.memPct ?? 0) > 80 ? 'danger' : (health._debug?.memPct ?? 0) > 60 ? 'warning' : 'success') as never },
-              { label: 'Change Fail Rate', value: `${health.changeFailureRate}%`,                                                   color: (health.changeFailureRate === 0 ? 'success' : 'danger') as never },
-            ],
-          },
           {
             label: 'Active Incidents',
             value: incData.metrics.open,
@@ -485,7 +489,7 @@ export default function ExecutiveDashboard() {
             ] : undefined,
           },
         ].map((kpi, i) => (
-          <motion.div key={kpi.label} custom={i + 1} initial="hidden" animate="visible" variants={fadeUp}>
+          <motion.div key={kpi.label} custom={i + 2} initial="hidden" animate="visible" variants={fadeUp}>
             <KPICard
               label={kpi.label}
               value={kpi.value}
