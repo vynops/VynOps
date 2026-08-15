@@ -1,13 +1,30 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { Suspense, useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Server, Plus, Trash2, RefreshCw, CheckCircle2, XCircle,
   Loader2, ChevronLeft, ExternalLink, Activity, Globe, Cpu, Hash, Pencil, Save, X, Zap,
+  Database, GitBranch, Bell, Key, BookOpen, User, Info, Clock, Users, Layers, ChevronRight, Settings,
 } from 'lucide-react'
 import Link from 'next/link'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { cn } from '@/lib/utils'
+
+const SETTINGS_SECTIONS = [
+  { id: 'clusters',      label: 'Clusters',       href: '/dashboard/settings/clusters' },
+  { id: 'connections',   label: 'Connections',   href: '/settings#connections' },
+  { id: 'datasources',   label: 'Data Sources',   href: '/settings#datasources' },
+  { id: 'integrations',  label: 'Integrations',   href: '/settings#integrations' },
+  { id: 'notifications', label: 'Notifications',  href: '/settings#notifications' },
+  { id: 'ai-provider',   label: 'AI Provider',    href: '/settings#ai-provider' },
+  { id: 'users',         label: 'Users',           href: '/settings#users' },
+  { id: 'oncall',        label: 'On-Call',         href: '/settings#oncall' },
+  { id: 'access',        label: 'Access & Keys',   href: '/settings#access' },
+  { id: 'audit-log',     label: 'Audit Log',       href: '/settings#audit-log' },
+  { id: 'profile',       label: 'Profile',         href: '/settings#profile' },
+  { id: 'about',         label: 'About',           href: '/settings#about' },
+]
 import { useDashboardStore } from '@/store'
 import type { K8sCluster } from '@/types'
 
@@ -25,7 +42,9 @@ const STATUS_BADGE: Record<string, string> = {
   unknown:  'text-surface-400 bg-surface-500/10 border-surface-500/30',
 }
 
-export default function ClustersPage() {
+function ClustersPageContent() {
+  const searchParams = useSearchParams()
+  const router = useRouter()
   const { clusters, setClusters, activeCluster, setActiveCluster } = useDashboardStore()
 
   const [loading, setLoading]   = useState(true)
@@ -37,6 +56,7 @@ export default function ClustersPage() {
   const [success, setSuccess]   = useState<string | null>(null)
   const [editTarget, setEditTarget] = useState<K8sCluster | null>(null)
   const [editForm, setEditForm] = useState<typeof form | null>(null)
+  const manageMode = searchParams.get('manage') === '1'
 
   // Add-cluster form state
   const [form, setForm] = useState({
@@ -47,9 +67,6 @@ export default function ClustersPage() {
     lokiUrl:          '',
     jaegerUrl:        '',
     grafanaUrl:       '',
-    couchbaseUrl:     '',
-    couchbaseUser:    '',
-    couchbasePass:    '',
     provider:         'on-prem',
     region:           '',
     environment:      'production',
@@ -72,6 +89,12 @@ export default function ClustersPage() {
 
   useEffect(() => { load() }, [load])
 
+  useEffect(() => {
+    if (!manageMode) router.replace('/settings?tab=clusters')
+  }, [manageMode, router])
+
+  if (!manageMode) return null
+
   function openEdit(c: K8sCluster) {
     setEditTarget(c)
     setEditForm({
@@ -82,9 +105,6 @@ export default function ClustersPage() {
       lokiUrl:         c.lokiUrl         ?? '',
       jaegerUrl:       c.jaegerUrl       ?? '',
       grafanaUrl:      c.grafanaUrl      ?? '',
-      couchbaseUrl:    c.couchbaseUrl    ?? '',
-      couchbaseUser:   c.couchbaseUser   ?? '',
-      couchbasePass:   c.couchbasePass   ?? '',
       provider:        c.provider,
       region:          c.region,
       environment:     c.environment ?? 'production',
@@ -150,7 +170,7 @@ export default function ClustersPage() {
       const created: K8sCluster = await res.json()
       setClusters([...clusters, created])
       if (!activeCluster) setActiveCluster(created)
-      setForm({ name: '', k8sUrl: '', promUrl: '', alertmanagerUrl: '', lokiUrl: '', jaegerUrl: '', grafanaUrl: '', couchbaseUrl: '', couchbaseUser: '', couchbasePass: '', provider: 'on-prem', region: '', environment: 'production', description: '' })
+      setForm({ name: '', k8sUrl: '', promUrl: '', alertmanagerUrl: '', lokiUrl: '', jaegerUrl: '', grafanaUrl: '', provider: 'on-prem', region: '', environment: 'production', description: '' })
       setAdding(false)
       setSuccess(`Cluster "${created.name}" added successfully.`)
     } catch (err: unknown) {
@@ -224,7 +244,32 @@ export default function ClustersPage() {
   }
 
   return (
-    <div className="min-h-screen bg-surface-950 text-white p-6">
+    <div className="flex flex-col h-full">
+      {/* Page header */}
+      <div className="px-6 py-4 border-b border-surface-800 flex-shrink-0">
+        <h1 className="text-lg font-bold text-white flex items-center gap-2">
+          <Settings className="w-5 h-5 text-brand-400" /> Settings
+        </h1>
+        <p className="text-xs text-surface-500 mt-0.5">Platform configuration · connections · integrations · access</p>
+      </div>
+
+      <div className="flex flex-1 min-h-0">
+        {/* Settings sidebar */}
+        <div className="hidden md:flex md:flex-col w-52 flex-shrink-0 border-r border-surface-800 p-3 space-y-0.5 overflow-y-auto">
+          {SETTINGS_SECTIONS.map(s => (
+            <Link key={s.id} href={s.href}
+              className={cn('w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm transition-all group',
+                s.id === 'clusters'
+                  ? 'bg-brand-500/10 text-brand-400'
+                  : 'text-surface-400 hover:bg-surface-800 hover:text-surface-300')}>
+              <span>{s.label}</span>
+              {s.id === 'clusters' && <ChevronRight className="w-3 h-3" />}
+            </Link>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6">
       {/* Header */}
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-3 mb-6">
@@ -368,37 +413,6 @@ export default function ClustersPage() {
                       className="w-full px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-sm text-white placeholder-surface-500 focus:outline-none focus:border-brand-500 transition-colors"
                     />
                   </div>
-                  <div className="sm:col-span-2">
-                    <p className="text-xs text-surface-500 font-medium mb-1">Couchbase <span className="text-surface-600 font-normal">(direct NodePort — not via K8s proxy)</span></p>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-surface-400 mb-1">Couchbase URL</label>
-                    <input
-                      value={form.couchbaseUrl}
-                      onChange={e => setForm(f => ({ ...f, couchbaseUrl: e.target.value }))}
-                      placeholder="http://node-ip:18091"
-                      className="w-full px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-sm text-white placeholder-surface-500 focus:outline-none focus:border-brand-500 transition-colors"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-surface-400 mb-1">Couchbase User</label>
-                    <input
-                      value={form.couchbaseUser}
-                      onChange={e => setForm(f => ({ ...f, couchbaseUser: e.target.value }))}
-                      placeholder="Administrator"
-                      className="w-full px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-sm text-white placeholder-surface-500 focus:outline-none focus:border-brand-500 transition-colors"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-surface-400 mb-1">Couchbase Password</label>
-                    <input
-                      type="password"
-                      value={form.couchbasePass}
-                      onChange={e => setForm(f => ({ ...f, couchbasePass: e.target.value }))}
-                      placeholder="••••••••"
-                      className="w-full px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-sm text-white placeholder-surface-500 focus:outline-none focus:border-brand-500 transition-colors"
-                    />
-                  </div>
                   <div>
                     <label className="block text-xs text-surface-400 mb-1">Provider</label>
                     <select
@@ -519,8 +533,6 @@ export default function ClustersPage() {
                             ['lokiUrl',         'Loki URL',         'http://loki:3100',       false],
                             ['jaegerUrl',       'Jaeger URL',       'http://jaeger:16686',    false],
                             ['grafanaUrl',      'Grafana URL',      'http://grafana:3000',     false],
-                            ['couchbaseUrl',    'Couchbase URL',    'http://node-ip:18091',    false],
-                            ['couchbaseUser',   'Couchbase User',   'Administrator',           false],
                             ['description',     'Description',      'Optional — e.g. Production cluster', false],
                           ] as [keyof typeof editForm, string, string, boolean][]).map(([key, label, ph, req]) => (
                             <div key={key}>
@@ -536,16 +548,6 @@ export default function ClustersPage() {
                               />
                             </div>
                           ))}
-                          <div>
-                            <label className="block text-xs text-surface-400 mb-1">Couchbase Password</label>
-                            <input
-                              type="password"
-                              value={editForm.couchbasePass}
-                              onChange={ev => setEditForm(f => f ? { ...f, couchbasePass: ev.target.value } : f)}
-                              placeholder="••••••••"
-                              className="w-full px-3 py-2 bg-surface-900 border border-surface-700 rounded-lg text-sm text-white placeholder-surface-500 focus:outline-none focus:border-brand-500 transition-colors"
-                            />
-                          </div>
                           <div>
                             <label className="block text-xs text-surface-400 mb-1">Provider</label>
                             <select
@@ -732,6 +734,17 @@ export default function ClustersPage() {
           </p>
         )}
       </div>
+        </div>
+      </div>
     </div>
   )
 }
+
+export default function ClustersPage() {
+  return (
+    <Suspense>
+      <ClustersPageContent />
+    </Suspense>
+  )
+}
+

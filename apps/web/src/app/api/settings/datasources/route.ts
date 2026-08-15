@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { auth }         from '@/lib/auth'
-import { resolveK8sUrl, resolvePromUrl, resolveAlertmanagerUrl, resolveLokiUrl, resolveJaegerUrl, resolveGrafanaUrl, resolveCouchbaseCreds } from '@/lib/cluster'
+import { resolveK8sUrl, resolvePromUrl, resolveLokiUrl, resolveJaegerUrl, resolveGrafanaUrl } from '@/lib/cluster'
 
 async function probe(
   url: string,
@@ -31,16 +31,9 @@ export async function GET() {
     resolveK8sUrl(), resolvePromUrl(), resolveJaegerUrl(), resolveGrafanaUrl(), resolveLokiUrl(),
   ])
 
-  const cbCreds = await resolveCouchbaseCreds(K8S)
-  const COUCHBASE = cbCreds.url.replace(/\/$/, '')
-  const cbAuth = cbCreds.pass
-    ? { Authorization: 'Basic ' + Buffer.from(`${cbCreds.user}:${cbCreds.pass}`).toString('base64') }
-    : undefined
-
-  const [k8s, prom, couchbase, jaeger, grafana, loki] = await Promise.all([
+  const [k8s, prom, jaeger, grafana, loki] = await Promise.all([
     probe(K8S,       '/version'),
     probe(PROM,      '/api/v1/status/runtimeinfo'),
-    probe(COUCHBASE, '/pools', { headers: cbAuth }),
     probe(JAEGER,    '/api/services'),
     probe(GRAFANA,   '/api/health'),
     probe(LOKI,      '/ready'),
@@ -73,14 +66,6 @@ export async function GET() {
         ...jaeger,
       },
       {
-        id: 'couchbase',
-        label: 'Couchbase',
-        category: 'Database',
-        url: COUCHBASE,
-        envVar: 'COUCHBASE_URL',
-        ...couchbase,
-      },
-      {
         id: 'grafana',
         label: 'Grafana',
         category: 'Visualisation',
@@ -101,3 +86,4 @@ export async function GET() {
     ],
   })
 }
+

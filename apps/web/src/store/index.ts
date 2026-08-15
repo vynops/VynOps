@@ -57,6 +57,10 @@ interface DashboardState {
 
   mobileNavOpen: boolean
 
+  clusterStatus: 'checking' | 'unconfigured' | 'unreachable' | 'connected'
+  clusterStatusCheckedAt: string | null
+  setClusterStatus: (status: 'checking' | 'unconfigured' | 'unreachable' | 'connected', checkedAt?: string) => void
+
   // Actions
   setTimeRange: (range: TimeRange) => void
   setActiveCluster: (cluster: K8sCluster | null) => void
@@ -119,6 +123,8 @@ export const useDashboardStore = create<DashboardState>()(
       rightSidebarOpen: true,
       mobileNavOpen: false,
       activeIncidentId: 'inc-001',
+      clusterStatus: 'checking' as const,
+      clusterStatusCheckedAt: null,
       isRealtimeActive: readRealtimeActive(),
       globalSearchQuery: '',
       activeNamespace: 'all',
@@ -160,6 +166,7 @@ export const useDashboardStore = create<DashboardState>()(
       setClusters: (clusters) => set({ clusters }),
       addCluster: (cluster) => set((s) => ({ clusters: [...s.clusters.filter(c => c.id !== cluster.id), cluster] })),
       removeCluster: (id) => set((s) => ({ clusters: s.clusters.filter(c => c.id !== id) })),
+      setClusterStatus: (status, checkedAt) => set({ clusterStatus: status, clusterStatusCheckedAt: checkedAt ?? new Date().toISOString() }),
     })),
     { name: 'VynOps-dashboard' },
   ),
@@ -179,3 +186,4 @@ export function getClusterHeaders(): Record<string, string> {
     'X-Grafana-Url':      activeCluster.grafanaUrl      || 'none',
   }
 }
+

@@ -24,6 +24,7 @@ export default function TopHeader() {
     alerts, incidents,
     isRealtimeActive, toggleRealtime,
     toggleMobileNav,
+    setClusterStatus,
   } = useDashboardStore()
 
   const { data: session } = useSession()
@@ -124,6 +125,35 @@ export default function TopHeader() {
       .catch(() => {})
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Probe active cluster connectivity every 30s
+  useEffect(() => {
+    let cancelled = false
+    const probe = async () => {
+      const state = useDashboardStore.getState()
+      if (!state.activeCluster) {
+        setClusterStatus(state.clusters.length === 0 ? 'unconfigured' : 'unconfigured')
+        return
+      }
+      const headers: Record<string, string> = {
+        'X-K8s-Url': state.activeCluster.k8sUrl || 'none',
+      }
+      try {
+        const r = await fetch('/api/settings/probe', { headers })
+        if (cancelled) return
+        if (!r.ok) { setClusterStatus('unreachable'); return }
+        const data = await r.json()
+        const k8sOk = data?.k8s?.ok === true
+        setClusterStatus(k8sOk ? 'connected' : (data?.k8s?.error === 'Not configured' ? 'unconfigured' : 'unreachable'))
+      } catch {
+        if (!cancelled) setClusterStatus('unreachable')
+      }
+    }
+    probe()
+    const id = setInterval(probe, 30_000)
+    return () => { cancelled = true; clearInterval(id) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCluster?.id])
 
   const criticalAlerts = alerts.filter(a => a.severity === 'critical' && a.state === 'firing').length
   const openIncidents = incidents.filter(i => i.state !== 'resolved').length
@@ -413,3 +443,4 @@ export default function TopHeader() {
     </header>
   )
 }
+

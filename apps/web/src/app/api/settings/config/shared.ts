@@ -7,12 +7,17 @@ export const NOTIF_LOG_PATH = path.join(process.cwd(), 'notifications.log.jsonl'
 
 export interface RuntimeConfig {
   slack_webhook_url?: string
+  teams_webhook_url?: string
   alertmanager_url?: string
   pagerduty_routing_key?: string
   alert_email?: string
   alert_webhook_url?: string
   groq_api_key?: string
   groq_model?: string
+  ai_provider?: 'groq' | 'openai' | 'google' | 'anthropic' | 'custom'
+  ai_api_key?: string
+  ai_model?: string
+  ai_base_url?: string
   notify_on?: Record<string, boolean>
   integrations_enabled?: Record<string, boolean>
   alert_routing?: Record<string, string[]>
@@ -72,3 +77,4 @@ export function appendNotifLog(entry: { ts: string; event: string; channels: str
     // non-critical
   }
 }
+

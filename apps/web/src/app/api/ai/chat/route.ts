@@ -1,5 +1,7 @@
 ﻿import { streamText, tool } from 'ai'
 import { createOpenAI } from '@ai-sdk/openai'
+import { createGoogleGenerativeAI } from '@ai-sdk/google'
+import { createAnthropic } from '@ai-sdk/anthropic'
 import { z } from 'zod'
 import { appendFileSync, mkdirSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
@@ -65,16 +67,27 @@ async function apiGet(path: string) {
   } catch { return null }
 }
 
-// ── Provider selection: Groq primary (Gemini key saved but blocked on Oracle Cloud) ─
-function getModel() {
-  const groq = createOpenAI({ apiKey: process.env.GROQ_API_KEY ?? '', baseURL: 'https://api.groq.com/openai/v1' })
-  // Runtime config overrides env (so Settings page changes apply without restart)
-  let model = process.env.GROQ_MODEL ?? 'meta-llama/llama-4-scout-17b-16e-instruct'
+// ── Provider selection: runtime settings override environment variables ─
+function getModel(): any {
+  let provider = process.env.AI_PROVIDER ?? 'groq'
+  let apiKey = process.env.AI_API_KEY ?? process.env.GROQ_API_KEY ?? ''
+  let model = process.env.AI_MODEL ?? process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile'
+  let baseUrl = process.env.AI_BASE_URL ?? ''
   try {
     const cfg = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
-    if (cfg.groq_model) model = cfg.groq_model
+    if (cfg.ai_provider) provider = cfg.ai_provider
+    if (cfg.ai_api_key) apiKey = cfg.ai_api_key
+    if (cfg.ai_model) model = cfg.ai_model
+    if (cfg.ai_base_url) baseUrl = cfg.ai_base_url
+    if (provider === 'groq') {
+      apiKey = cfg.ai_api_key ?? cfg.groq_api_key ?? apiKey
+      model = cfg.ai_model ?? cfg.groq_model ?? model
+    }
   } catch {}
-  return groq(model, { parallelToolCalls: false })
+  if (provider === 'google') return createGoogleGenerativeAI({ apiKey })(model)
+  if (provider === 'anthropic') return createAnthropic({ apiKey })(model)
+  const openai = createOpenAI({ apiKey, baseURL: baseUrl || (provider === 'groq' ? 'https://api.groq.com/openai/v1' : undefined) })
+  return openai(model, { parallelToolCalls: false })
 }
 
 // ── System prompt ─────────────────────────────────────────────
@@ -912,9 +925,16 @@ export async function POST(req: Request) {
     )
   }
 
-  if (!process.env.GROQ_API_KEY && !process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+  let configuredProvider = process.env.AI_PROVIDER ?? 'groq'
+  let configuredKey = process.env.AI_API_KEY ?? process.env.GROQ_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? ''
+  try {
+    const cfg = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
+    configuredProvider = cfg.ai_provider ?? configuredProvider
+    configuredKey = cfg.ai_api_key ?? (configuredProvider === 'groq' ? cfg.groq_api_key : configuredKey)
+  } catch {}
+  if (!configuredKey) {
     return new Response(
-      JSON.stringify({ error: 'No AI provider configured. Set GOOGLE_GENERATIVE_AI_API_KEY (Gemini) or GROQ_API_KEY (Groq) in .env.local.' }),
+      JSON.stringify({ error: `No API key configured for ${configuredProvider}. Configure it in Settings → AI Provider or set the matching environment variable.` }),
       { status: 503, headers: { 'Content-Type': 'application/json' } },
     )
   }
@@ -952,7 +972,7 @@ export async function POST(req: Request) {
 
     const systemPrompt = await buildSystemPrompt()
     const result = streamText({
-      model: getModel(),
+      model: getModel() as any,
       system: systemPrompt,
       messages: trimmedMessages,
       tools: safeTools, maxSteps: 5, temperature: 0.1, maxTokens: 1500,

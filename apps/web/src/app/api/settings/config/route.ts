@@ -10,7 +10,7 @@ import {
 } from '@/app/api/settings/config/shared'
 
 // Fields whose full value must be masked in GET responses
-const SECRET_FIELDS = new Set(['groq_api_key', 'pagerduty_routing_key', 'smtp_pass'])
+const SECRET_FIELDS = new Set(['groq_api_key', 'ai_api_key', 'pagerduty_routing_key', 'smtp_pass'])
 const SENTINEL      = '__UNCHANGED__'
 
 function maskSecret(value: string): string {
@@ -19,24 +19,44 @@ function maskSecret(value: string): string {
 }
 
 // ── GET — load merged config (env fallbacks, secrets masked) ──
-export async function GET() {
+export async function GET(req: Request) {
   const session = await auth()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const reveal = new URL(req.url).searchParams.get('reveal') === '1'
+  if (reveal && (session.user as any)?.role !== 'admin') {
+    return NextResponse.json({ error: 'Forbidden — admin role required' }, { status: 403 })
+  }
+
   const stored = readConfig()
+  const configuredProvider = stored.ai_provider ?? (process.env.AI_PROVIDER as RuntimeConfig['ai_provider']) ?? 'groq'
+  const providerEnvKey = configuredProvider === 'google'
+    ? process.env.GOOGLE_GENERATIVE_AI_API_KEY
+    : configuredProvider === 'anthropic'
+      ? process.env.ANTHROPIC_API_KEY
+      : configuredProvider === 'openai'
+        ? process.env.OPENAI_API_KEY
+        : configuredProvider === 'groq'
+          ? process.env.GROQ_API_KEY
+          : undefined
 
   // Merge: runtime config > .env fallbacks
   const merged: RuntimeConfig = {
     slack_webhook_url:       stored.slack_webhook_url       ?? process.env.SLACK_WEBHOOK_URL       ?? '',
+    teams_webhook_url:       stored.teams_webhook_url       ?? process.env.TEAMS_WEBHOOK_URL       ?? '',
     alertmanager_url:        stored.alertmanager_url        ?? process.env.ALERTMANAGER_URL        ?? '',
     pagerduty_routing_key:   stored.pagerduty_routing_key   ?? process.env.PAGERDUTY_ROUTING_KEY   ?? '',
     alert_email:             stored.alert_email             ?? process.env.ALERT_EMAIL             ?? '',
     alert_webhook_url:       stored.alert_webhook_url       ?? process.env.ALERT_WEBHOOK_URL       ?? '',
     groq_api_key:            stored.groq_api_key            ?? process.env.GROQ_API_KEY            ?? '',
     groq_model:              stored.groq_model              ?? process.env.GROQ_MODEL              ?? 'llama-3.3-70b-versatile',
+    ai_provider:             configuredProvider,
+    ai_api_key:              stored.ai_api_key              ?? process.env.AI_API_KEY              ?? providerEnvKey ?? '',
+    ai_model:                stored.ai_model                ?? process.env.AI_MODEL                ?? '',
+    ai_base_url:             stored.ai_base_url             ?? process.env.AI_BASE_URL             ?? '',
     notify_on:               stored.notify_on               ?? {},
     integrations_enabled:    stored.integrations_enabled    ?? {},
-    alert_routing:           stored.alert_routing           ?? { critical: ['pagerduty', 'slack'], warning: ['slack'], info: ['slack'] },
+    alert_routing:           stored.alert_routing           ?? { critical: ['slack'], warning: ['slack'], info: ['slack'] },
     notify_cooldown_minutes: stored.notify_cooldown_minutes ?? 30,
     last_tested:             stored.last_tested             ?? {},
     smtp_host:               stored.smtp_host  ?? process.env.SMTP_HOST  ?? '',
@@ -50,6 +70,9 @@ export async function GET() {
   const safe: Record<string, any> = { ...merged }
   for (const field of SECRET_FIELDS) {
     if (safe[field]) safe[field] = maskSecret(safe[field] as string)
+  }
+  if (reveal) {
+    for (const field of SECRET_FIELDS) safe[field] = merged[field]
   }
 
   // Tell the client which fields are sourced from env vs runtime file
@@ -66,12 +89,17 @@ export async function GET() {
 // ── Zod validation schema ─────────────────────────────────────
 const configBodySchema = z.object({
   slack_webhook_url:       z.string().max(500).optional(),
+  teams_webhook_url:       z.string().max(500).optional(),
   alertmanager_url:        z.string().max(500).optional(),
   pagerduty_routing_key:   z.string().max(64).optional(),
   alert_email:             z.string().max(255).optional(),
   alert_webhook_url:       z.string().max(500).optional(),
   groq_api_key:            z.string().max(200).optional(),
   groq_model:              z.string().max(100).optional(),
+  ai_provider:             z.enum(['groq', 'openai', 'google', 'anthropic', 'custom']).optional(),
+  ai_api_key:              z.string().max(500).optional(),
+  ai_model:                z.string().max(200).optional(),
+  ai_base_url:             z.string().url().max(500).optional().or(z.literal('')),
   notify_on:               z.record(z.boolean()).optional(),
   integrations_enabled:    z.record(z.boolean()).optional(),
   alert_routing:           z.record(z.array(z.string())).optional(),
@@ -119,8 +147,9 @@ export async function POST(req: Request) {
   const updated: RuntimeConfig = { ...existing }
 
   const fields: (keyof RuntimeConfig)[] = [
-    'slack_webhook_url', 'alertmanager_url', 'pagerduty_routing_key',
+    'slack_webhook_url', 'teams_webhook_url', 'alertmanager_url', 'pagerduty_routing_key',
     'alert_email', 'alert_webhook_url', 'groq_api_key', 'groq_model',
+    'ai_provider', 'ai_api_key', 'ai_model', 'ai_base_url',
   ]
 
   const changedFields: string[] = []
@@ -182,3 +211,4 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true })
 }
+

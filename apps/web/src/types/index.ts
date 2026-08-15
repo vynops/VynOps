@@ -162,9 +162,6 @@ export interface K8sCluster {
   lokiUrl?: string
   jaegerUrl?: string
   grafanaUrl?: string
-  couchbaseUrl?: string
-  couchbaseUser?: string
-  couchbasePass?: string
   isDefault?: boolean
   // Enterprise metadata (P2)
   displayName?: string
@@ -534,7 +531,7 @@ export interface ResourceQuota {
 }
 
 // ── Database ─────────────────────────────────────────────────
-export type DbEngine = 'postgres' | 'mysql' | 'redis' | 'kafka' | 'elasticsearch' | 'mongodb' | 'couchbase'
+export type DbEngine = 'postgres' | 'mysql' | 'redis' | 'kafka' | 'elasticsearch' | 'mongodb'
 export type DbHosting = 'self-hosted' | 'rds' | 'cloud-sql' | 'elasticache' | 'azure-db'
 
 export interface DbReplication {
@@ -920,3 +917,4 @@ export interface Trace {
   startedAt: string
   spans: TraceSpan[]
 }
+

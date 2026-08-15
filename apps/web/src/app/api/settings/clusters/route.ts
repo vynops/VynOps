@@ -13,7 +13,9 @@ function readClusters(): K8sCluster[] {
   try {
     if (!existsSync(DATA_FILE)) return []
     const parsed = JSON.parse(readFileSync(DATA_FILE, 'utf8'))
-    return Array.isArray(parsed) ? parsed : []
+    return Array.isArray(parsed)
+      ? parsed.map(({ couchbaseUrl: _url, couchbaseUser: _user, couchbasePass: _pass, ...cluster }) => cluster)
+      : []
   } catch { return [] }
 }
 
@@ -191,12 +193,10 @@ export async function POST(req: Request) {
   const body = await req.json()
   const {
     name, k8sUrl, promUrl, alertmanagerUrl, lokiUrl, jaegerUrl, grafanaUrl,
-    couchbaseUrl, couchbaseUser, couchbasePass,
     provider, region, environment, description, tags,
   } = body as {
     name: string; k8sUrl: string; promUrl?: string
     alertmanagerUrl?: string; lokiUrl?: string; jaegerUrl?: string; grafanaUrl?: string
-    couchbaseUrl?: string; couchbaseUser?: string; couchbasePass?: string
     provider?: string; region?: string
     environment?: string; description?: string; tags?: string[]
   }
@@ -246,9 +246,6 @@ export async function POST(req: Request) {
     lokiUrl:          lokiUrl?.trim()          || disc.lokiUrl,
     jaegerUrl:        jaegerUrl?.trim()        || disc.jaegerUrl,
     grafanaUrl:       grafanaUrl?.trim()       || disc.grafanaUrl,
-    couchbaseUrl:     couchbaseUrl?.trim()     ?? '',
-    couchbaseUser:    couchbaseUser?.trim()    ?? '',
-    couchbasePass:    couchbasePass?.trim()    ?? '',
     isDefault:        isFirstCluster,
   }
 
@@ -278,7 +275,6 @@ export async function PATCH(req: Request) {
   const body = await req.json() as {
     id: string; name?: string; k8sUrl?: string; promUrl?: string
     alertmanagerUrl?: string; lokiUrl?: string; jaegerUrl?: string; grafanaUrl?: string
-    couchbaseUrl?: string; couchbaseUser?: string; couchbasePass?: string
     provider?: string; region?: string
     environment?: string; description?: string; tags?: string[]
   }
@@ -318,9 +314,6 @@ export async function PATCH(req: Request) {
     lokiUrl:         body.lokiUrl?.trim()         ?? existing.lokiUrl         ?? '',
     jaegerUrl:       body.jaegerUrl?.trim()       ?? existing.jaegerUrl       ?? '',
     grafanaUrl:      body.grafanaUrl?.trim()      ?? existing.grafanaUrl      ?? '',
-    couchbaseUrl:    body.couchbaseUrl?.trim()    ?? existing.couchbaseUrl    ?? '',
-    couchbaseUser:   body.couchbaseUser?.trim()   ?? existing.couchbaseUser   ?? '',
-    couchbasePass:   body.couchbasePass?.trim()   ?? existing.couchbasePass   ?? '',
     updatedAt:       new Date().toISOString(),
     updatedBy:       (session?.user as any)?.email ?? 'system',
     ...probeFields,
@@ -371,9 +364,6 @@ export async function PUT(req: Request) {
     lokiUrl:          existing.lokiUrl         || disc.lokiUrl,
     jaegerUrl:        existing.jaegerUrl       || disc.jaegerUrl,
     grafanaUrl:       existing.grafanaUrl      || disc.grafanaUrl,
-    couchbaseUrl:     existing.couchbaseUrl  ?? '',
-    couchbaseUser:    existing.couchbaseUser ?? '',
-    couchbasePass:    existing.couchbasePass ?? '',
   }
 
   writeClusters(clusters.map(c => c.id === id ? updated : c))

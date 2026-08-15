@@ -25,8 +25,8 @@ interface ProbeData {
 }
 
 const SECTIONS = [
-  { id: 'connections',   label: 'Connections',   icon: Server },
   { id: 'clusters',      label: 'Clusters',       icon: Layers },
+  { id: 'connections',   label: 'Connections',   icon: Server },
   { id: 'datasources',   label: 'Data Sources',  icon: Database },
   { id: 'integrations',  label: 'Integrations',  icon: GitBranch },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -318,7 +318,7 @@ interface DataSource {
   ok: boolean; latencyMs: number; detail: string | null
 }
 
-const CATEGORY_ORDER = ['Orchestration', 'Metrics', 'Tracing', 'Database', 'Visualisation', 'Logs']
+const CATEGORY_ORDER = ['Orchestration', 'Metrics', 'Tracing', 'Visualisation', 'Logs']
 
 function DataSourcesTab() {
   const [sources,   setSources]   = useState<DataSource[]>([])
@@ -452,16 +452,10 @@ function DataSourcesTab() {
 
 // -- Integrations tab ------------------------------------------------------
 const INTEGRATIONS = [
-  { id: 'prometheus',  name: 'Prometheus',   desc: 'Metrics & alerting',      category: 'Monitoring',  probeRoute: '/api/observability/metrics',  docs: 'https://prometheus.io' },
-  { id: 'grafana',     name: 'Grafana',      desc: 'Dashboard visualisation', category: 'Monitoring',  probeRoute: null,                          docs: 'https://grafana.com' },
-  { id: 'alertmanager',name: 'Alertmanager', desc: 'Alert routing & silence', category: 'Monitoring',  probeRoute: null,                          docs: 'https://prometheus.io/docs/alerting' },
-  { id: 'falco',       name: 'Falco',        desc: 'Runtime security',        category: 'Security',    probeRoute: '/api/k8s/security',           docs: 'https://falco.org' },
-  { id: 'argocd',      name: 'Argo CD',      desc: 'GitOps deployments',      category: 'CI/CD',       probeRoute: null,                          docs: 'https://argoproj.github.io' },
-  { id: 'github',      name: 'GitHub',       desc: 'Source + deploy tracking',category: 'CI/CD',       probeRoute: null,                          docs: 'https://github.com' },
-  { id: 'pagerduty',   name: 'PagerDuty',    desc: 'On-call management',      category: 'Alerting',    probeRoute: null,                          docs: 'https://pagerduty.com' },
-  { id: 'slack',       name: 'Slack',        desc: 'Notification channels',   category: 'Alerting',    probeRoute: null,                          docs: 'https://slack.com' },
-  { id: 'datadog',     name: 'Datadog',      desc: 'Metrics forwarding',      category: 'Monitoring',  probeRoute: null,                          docs: 'https://docs.datadoghq.com' },
-  { id: 'opsgenie',    name: 'Opsgenie',     desc: 'Alert escalation',        category: 'Alerting',    probeRoute: null,                          docs: 'https://opsgenie.com' },
+  { id: 'falco',  name: 'Falco',    desc: 'Runtime security detection', category: 'Security', probeRoute: '/api/k8s/security', docs: 'https://falco.org', status: 'available' },
+  { id: 'argocd', name: 'Argo CD',  desc: 'GitOps deployment tracking', category: 'CI/CD',    probeRoute: null,                 docs: 'https://argoproj.github.io', status: 'coming-soon' },
+  { id: 'github', name: 'GitHub',   desc: 'Source and deployment tracking', category: 'CI/CD', probeRoute: null,                 docs: 'https://github.com', status: 'coming-soon' },
+  { id: 'datadog', name: 'Datadog', desc: 'Metrics forwarding',           category: 'Monitoring', probeRoute: null,              docs: 'https://docs.datadoghq.com', status: 'coming-soon' },
 ]
 
 function IntegrationsTab() {
@@ -527,9 +521,10 @@ function IntegrationsTab() {
             {items.map(int => {
               const st = statuses[int.id]
               const on = enabled[int.id] ?? false
+              const comingSoon = int.status === 'coming-soon'
               return (
                 <div key={int.id} className={cn('flex items-center gap-3 p-4 rounded-2xl border transition-all',
-                  on ? 'bg-surface-900 border-surface-700' : 'bg-surface-900/50 border-surface-800 opacity-60')}>
+                  comingSoon ? 'bg-surface-900/40 border-surface-800' : on ? 'bg-surface-900 border-surface-700' : 'bg-surface-900/50 border-surface-800 opacity-60')}>
                   <div className="w-9 h-9 rounded-xl bg-surface-800 border border-surface-700 flex items-center justify-center flex-shrink-0">
                     <Package className="w-4 h-4 text-surface-400" />
                   </div>
@@ -537,11 +532,15 @@ function IntegrationsTab() {
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-medium text-white">{int.name}</p>
                       <span className="text-2xs text-surface-600">{int.category}</span>
+                      <span className={cn('text-2xs px-1.5 py-0.5 rounded border font-medium',
+                        comingSoon ? 'text-surface-500 border-surface-700 bg-surface-800' : on ? 'text-success border-success/20 bg-success/10' : 'text-surface-500 border-surface-700 bg-surface-800')}>
+                        {comingSoon ? 'Coming soon' : on ? 'Configured' : 'Not configured'}
+                      </span>
                     </div>
                     <p className="text-xs text-surface-400">{int.desc}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    {int.probeRoute && on && (
+                    {int.probeRoute && on && !comingSoon && (
                       <button onClick={() => testConn(int.id, int.probeRoute)}
                         disabled={st === 'checking'}
                         className="text-2xs px-2 py-1 bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-lg text-surface-400 hover:text-white transition-all flex items-center gap-1">
@@ -551,9 +550,9 @@ function IntegrationsTab() {
                     )}
                     {st === 'ok'    && <CheckCircle2 className="w-4 h-4 text-success" />}
                     {st === 'error' && <XCircle      className="w-4 h-4 text-danger" />}
-                    <button onClick={() => toggle(int.id)}
+                    <button onClick={() => !comingSoon && toggle(int.id)} disabled={comingSoon}
                       className={cn('relative w-10 h-5 rounded-full border transition-all flex-shrink-0',
-                        on ? 'bg-brand-500 border-brand-400' : 'bg-surface-700 border-surface-600')}>
+                        comingSoon ? 'bg-surface-800 border-surface-700 opacity-50 cursor-not-allowed' : on ? 'bg-brand-500 border-brand-400' : 'bg-surface-700 border-surface-600')}>
                       <span className={cn('absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform',
                         on ? 'translate-x-5' : 'translate-x-0')} />
                     </button>
@@ -581,7 +580,7 @@ const SENTINEL = '__UNCHANGED__'
 
 const NOTIF_CHANNELS = [
   { id: 'slack_webhook_url',     label: 'Slack Webhook URL',       placeholder: 'https://hooks.slack.com/services/...', env: 'SLACK_WEBHOOK_URL',     testAction: 'slack',        masked: false },
-  { id: 'alertmanager_url',      label: 'Alertmanager URL',        placeholder: 'http://your-host:9093',                env: 'ALERTMANAGER_URL',      testAction: 'alertmanager', masked: false },
+  { id: 'teams_webhook_url',     label: 'Microsoft Teams Webhook URL', placeholder: 'https://your-org.webhook.office.com/...', env: 'TEAMS_WEBHOOK_URL', testAction: 'teams', masked: false },
   { id: 'alert_email',           label: 'Alert Email (SMTP To)',   placeholder: 'oncall@your-org.com',                  env: 'ALERT_EMAIL',           testAction: 'email',        masked: false },
   { id: 'alert_webhook_url',     label: 'Generic Webhook URL',     placeholder: 'https://your-endpoint/alert',          env: 'ALERT_WEBHOOK_URL',     testAction: 'webhook',      masked: false },
 ]
@@ -611,7 +610,7 @@ const COOLDOWN_OPTIONS = [
   { value: 1440, label: '24 hours' },
 ]
 
-const CHANNELS_LIST = ['slack', 'email']
+const CHANNELS_LIST = ['slack', 'teams', 'email', 'webhook']
 const SEVERITY_LEVELS = ['critical', 'warning', 'info'] as const
 
 function NotificationsTab() {
@@ -639,6 +638,7 @@ function NotificationsTab() {
       const cfg = d.config ?? {}
       setValues({
         slack_webhook_url:     cfg.slack_webhook_url     ?? '',
+        teams_webhook_url:     cfg.teams_webhook_url     ?? '',
         alertmanager_url:      cfg.alertmanager_url      ?? '',
         pagerduty_routing_key: cfg.pagerduty_routing_key ?? '',
         alert_email:           cfg.alert_email           ?? '',
@@ -988,16 +988,21 @@ function NotificationsTab() {
 }
 
 // -- AI Provider tab -------------------------------------------------------
-const GROQ_MODELS = [
-  { id: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout 17B',     note: 'Best balance � 30k TPM � 500k TPD' },
-  { id: 'llama-3.3-70b-versatile',                   label: 'Llama 3.3 70B Versatile', note: 'Strong tool calling � 12k TPM � 100k TPD' },
-  { id: 'llama-3.1-8b-instant',                      label: 'Llama 3.1 8B Instant',    note: 'Fast � 6k TPM � 500k TPD � lower quality' },
-]
+const AI_PROVIDERS = [
+  { id: 'groq',      label: 'Groq',      defaultModel: 'llama-3.3-70b-versatile',                   keyLabel: 'Groq API Key', keyPlaceholder: 'gsk_...' },
+  { id: 'openai',    label: 'OpenAI',    defaultModel: 'gpt-4o-mini',                          keyLabel: 'OpenAI API Key', keyPlaceholder: 'sk-...' },
+  { id: 'google',    label: 'Google',    defaultModel: 'gemini-2.0-flash',                    keyLabel: 'Google AI API Key', keyPlaceholder: 'AIza...' },
+  { id: 'anthropic', label: 'Claude',    defaultModel: 'claude-3-5-sonnet-latest',            keyLabel: 'Anthropic API Key', keyPlaceholder: 'sk-ant-...' },
+  { id: 'custom',    label: 'Custom',    defaultModel: '',                                    keyLabel: 'API Key', keyPlaceholder: 'API key (optional)' },
+] as const
 
 function AIProviderTab() {
+  const [provider, setProvider] = useState('groq')
   const [apiKey,   setApiKey]   = useState('')
-  const [model,    setModel]    = useState('meta-llama/llama-4-scout-17b-16e-instruct')
+  const [model,    setModel]    = useState('llama-3.3-70b-versatile')
+  const [baseUrl,  setBaseUrl]  = useState('')
   const [keyHidden,setKeyHidden]= useState(true)
+  const [revealingKey, setRevealingKey] = useState(false)
   const [source,   setSource]   = useState<Record<string, string>>({})
   const [loading,  setLoading]  = useState(true)
   const [saving,   setSaving]   = useState(false)
@@ -1009,11 +1014,6 @@ function AIProviderTab() {
   const role = useRole()
   useDirtyGuard('ai-provider', dirty)
 
-  // Autonomous settings
-  const [autoEnabled,      setAutoEnabled]      = useState(false)
-  const [autoDryRun,       setAutoDryRun]       = useState(true)
-  const [autoConfidence,   setAutoConfidence]   = useState(80)
-
   // FinOps rate settings
   const [finopsCpu,        setFinopsCpu]        = useState(0.048)
   const [finopsMem,        setFinopsMem]        = useState(0.006)
@@ -1022,12 +1022,13 @@ function AIProviderTab() {
   useEffect(() => {
     fetch('/api/settings/config').then(r => r.json()).then(d => {
       const cfg = d.config ?? {}
-      setApiKey(cfg.groq_api_key ?? '')
-      setModel(cfg.groq_model   ?? 'meta-llama/llama-4-scout-17b-16e-instruct')
+      const selectedProvider = cfg.ai_provider ?? 'groq'
+      const providerConfig = AI_PROVIDERS.find(p => p.id === selectedProvider) ?? AI_PROVIDERS[0]
+      setProvider(selectedProvider)
+      setApiKey(cfg.ai_api_key ?? cfg.groq_api_key ?? '')
+      setModel(cfg.ai_model ?? cfg.groq_model ?? providerConfig.defaultModel)
+      setBaseUrl(cfg.ai_base_url ?? '')
       setSource(d.source ?? {})
-      setAutoEnabled(cfg.autonomous_enabled    ?? false)
-      setAutoDryRun(cfg.autonomous_dry_run     ?? true)
-      setAutoConfidence(cfg.autonomous_confidence_threshold ?? 80)
       setFinopsCpu(cfg.finops_cpu_per_core_hr      ?? 0.048)
       setFinopsMem(cfg.finops_mem_per_gib_hr       ?? 0.006)
       setFinopsStorage(cfg.finops_storage_per_gib_mo ?? 0.05)
@@ -1038,17 +1039,16 @@ function AIProviderTab() {
   const save = async () => {
     setSaving(true); setError(null)
     const payload: Record<string, any> = {
-      groq_model: model,
-      autonomous_enabled:              autoEnabled,
-      autonomous_dry_run:              autoDryRun,
-      autonomous_confidence_threshold: autoConfidence,
+      ai_provider: provider,
+      ai_model: model,
+      ai_base_url: baseUrl,
       finops_cpu_per_core_hr:          finopsCpu,
       finops_mem_per_gib_hr:           finopsMem,
       finops_storage_per_gib_mo:       finopsStorage,
     }
     // Only send key if user typed a new one (not the masked value)
-    if (apiKey && !apiKey.startsWith('****')) payload.groq_api_key = apiKey
-    else payload.groq_api_key = SENTINEL
+    if (apiKey && !apiKey.startsWith('****')) payload.ai_api_key = apiKey
+    else payload.ai_api_key = SENTINEL
     try {
       const r = await fetch('/api/settings/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       if (!r.ok) { const d = await r.json(); setError(d.error ?? 'Save failed'); return }
@@ -1064,10 +1064,10 @@ function AIProviderTab() {
       const r = await fetch('/api/settings/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'groq', apiKey: keyToTest, model }),
+        body: JSON.stringify({ action: 'ai', provider, apiKey: keyToTest, model, baseUrl }),
       })
       const d = await r.json()
-      setTestRes({ ok: d.ok, msg: d.ok ? `? ${d.message} � ${d.latencyMs}ms` : `? ${d.error}` })
+      setTestRes({ ok: d.ok, msg: d.ok ? `Connected · ${d.message} · ${d.latencyMs}ms` : d.error })
     } catch (e: any) {
       setTestRes({ ok: false, msg: `? ${e.message}` })
     } finally { setTesting(false) }
@@ -1078,18 +1078,29 @@ function AIProviderTab() {
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h2 className="text-sm font-semibold text-white">AI Provider � Groq</h2>
+        <h2 className="text-sm font-semibold text-white">AI Provider</h2>
         <p className="text-xs text-surface-500 mt-0.5">API key and model selection for the AI Copilot. Changes take effect immediately.</p>
+      </div>
+
+      {/* Provider */}
+      <div>
+        <label className="text-2xs font-semibold text-surface-400 uppercase tracking-wider block mb-1.5">Provider</label>
+        <select value={provider} onChange={e => {
+          const next = AI_PROVIDERS.find(p => p.id === e.target.value) ?? AI_PROVIDERS[0]
+          setProvider(next.id); setModel(next.defaultModel); setApiKey(''); setTestRes(null); setDirty(true)
+        }} className="w-full bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-2.5 text-sm text-white outline-none transition-all">
+          {AI_PROVIDERS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+        </select>
       </div>
 
       {/* API Key */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label className="text-2xs font-semibold text-surface-400 uppercase tracking-wider">Groq API Key</label>
+          <label className="text-2xs font-semibold text-surface-400 uppercase tracking-wider">{AI_PROVIDERS.find(p => p.id === provider)?.keyLabel} </label>
           <div className="flex items-center gap-2">
-            {source.groq_api_key === 'env'     && <span className="text-2xs text-warning bg-warning/10 border border-warning/20 px-1.5 py-0.5 rounded font-mono">from .env</span>}
-            {source.groq_api_key === 'runtime' && <span className="text-2xs text-success bg-success/10 border border-success/20 px-1.5 py-0.5 rounded font-mono">saved</span>}
-            <code className="text-2xs font-mono text-brand-400 bg-brand-500/10 px-1.5 py-0.5 rounded">GROQ_API_KEY</code>
+            {source.ai_api_key === 'env'     && <span className="text-2xs text-warning bg-warning/10 border border-warning/20 px-1.5 py-0.5 rounded font-mono">from .env</span>}
+            {source.ai_api_key === 'runtime' && <span className="text-2xs text-success bg-success/10 border border-success/20 px-1.5 py-0.5 rounded font-mono">saved</span>}
+            <code className="text-2xs font-mono text-brand-400 bg-brand-500/10 px-1.5 py-0.5 rounded">AI_API_KEY</code>
           </div>
         </div>
         <div className="relative">
@@ -1097,15 +1108,30 @@ function AIProviderTab() {
             type={keyHidden ? 'password' : 'text'}
             value={apiKey}
             onChange={e => { setApiKey(e.target.value); setDirty(true) }}
-            placeholder="gsk_..."
+            placeholder={AI_PROVIDERS.find(p => p.id === provider)?.keyPlaceholder}
             className="w-full bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-2.5 text-sm text-white font-mono outline-none transition-all pr-9"
           />
-          <button onClick={() => setKeyHidden(h => !h)}
+          <button onClick={async () => {
+            if (!keyHidden) { setKeyHidden(true); return }
+            if (!apiKey.startsWith('****')) { setKeyHidden(false); return }
+            setRevealingKey(true)
+            try {
+              const r = await fetch('/api/settings/config?reveal=1')
+              const d = await r.json()
+              if (!r.ok) throw new Error(d.error ?? 'Unable to reveal API key')
+              const revealed = d.config?.ai_api_key || d.config?.groq_api_key || ''
+              if (!revealed) throw new Error('No saved API key is configured')
+              setApiKey(revealed)
+              setKeyHidden(false)
+              setError(null)
+            } catch (e: any) { setError(e.message ?? 'Unable to reveal API key') }
+            finally { setRevealingKey(false) }
+          }} disabled={revealingKey}
             className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-300">
-            {keyHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            {revealingKey ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : keyHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
           </button>
         </div>
-        <p className="text-2xs text-surface-600 mt-1">Get your key at <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline">console.groq.com/keys</a></p>
+        <p className="text-2xs text-surface-600 mt-1">Keys are stored in the server runtime configuration and masked in this form.</p>
       </div>
 
       {/* Model */}
@@ -1113,28 +1139,24 @@ function AIProviderTab() {
         <div className="flex items-center justify-between mb-1.5">
           <label className="text-2xs font-semibold text-surface-400 uppercase tracking-wider">Active Model</label>
           <div className="flex items-center gap-2">
-            {source.groq_model === 'env'     && <span className="text-2xs text-warning bg-warning/10 border border-warning/20 px-1.5 py-0.5 rounded font-mono">from .env</span>}
-            {source.groq_model === 'runtime' && <span className="text-2xs text-success bg-success/10 border border-success/20 px-1.5 py-0.5 rounded font-mono">saved</span>}
-            <code className="text-2xs font-mono text-brand-400 bg-brand-500/10 px-1.5 py-0.5 rounded">GROQ_MODEL</code>
+            {source.ai_model === 'env'     && <span className="text-2xs text-warning bg-warning/10 border border-warning/20 px-1.5 py-0.5 rounded font-mono">from .env</span>}
+            {source.ai_model === 'runtime' && <span className="text-2xs text-success bg-success/10 border border-success/20 px-1.5 py-0.5 rounded font-mono">saved</span>}
+            <code className="text-2xs font-mono text-brand-400 bg-brand-500/10 px-1.5 py-0.5 rounded">AI_MODEL</code>
           </div>
         </div>
-        <div className="space-y-2">
-          {GROQ_MODELS.map(m => (
-            <label key={m.id} onClick={() => { setModel(m.id); setDirty(true) }}
-              className={cn('flex items-center gap-3 p-3.5 rounded-xl border cursor-pointer transition-all',
-                model === m.id ? 'bg-brand-500/10 border-brand-500/40' : 'bg-surface-900 border-surface-800 hover:border-surface-700')}>
-              <div className={cn('w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0',
-                model === m.id ? 'border-brand-500' : 'border-surface-600')}>
-                {model === m.id && <div className="w-2 h-2 rounded-full bg-brand-500" />}
-              </div>
-              <div className="flex-1">
-                <p className="text-sm text-white font-medium">{m.label}</p>
-                <p className="text-2xs text-surface-500 font-mono mt-0.5">{m.id}</p>
-              </div>
-              <span className="text-2xs text-surface-500">{m.note}</span>
-            </label>
-          ))}
-        </div>
+        <p className="text-2xs text-surface-500 mb-1.5">
+          Enter the exact model ID from the selected provider. Example: <code className="text-brand-400">{AI_PROVIDERS.find(p => p.id === provider)?.defaultModel || 'your-model-id'}</code>
+        </p>
+        <input value={model} onChange={e => { setModel(e.target.value); setDirty(true) }} placeholder={AI_PROVIDERS.find(p => p.id === provider)?.defaultModel || 'provider-model-id'} aria-label="Active model ID" className="w-full bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-2.5 text-sm text-white font-mono outline-none transition-all" />
+        {provider === 'custom' && <>
+          <label className="text-2xs font-semibold text-surface-400 uppercase tracking-wider block mt-4 mb-1.5">OpenAI-compatible Base URL</label>
+          <input value={baseUrl} onChange={e => { setBaseUrl(e.target.value); setDirty(true) }} placeholder="https://api.example.com/v1" className="w-full bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-2.5 text-sm text-white font-mono outline-none transition-all" />
+        </>}
+        {provider === 'groq' && <p className="text-2xs text-surface-500 mt-1">Use a model ID available in your Groq account.</p>}
+        {provider === 'google' && <p className="text-2xs text-surface-500 mt-1">Example: gemini-2.0-flash or gemini-1.5-pro.</p>}
+        {provider === 'anthropic' && <p className="text-2xs text-surface-500 mt-1">Example: claude-3-5-sonnet-latest.</p>}
+        {provider === 'openai' && <p className="text-2xs text-surface-500 mt-1">Example: gpt-4o-mini or gpt-4o.</p>}
+        {provider === 'custom' && <p className="text-2xs text-surface-500 mt-1">The endpoint must expose an OpenAI-compatible API.</p>}
       </div>
 
       {/* Test connection */}
@@ -1153,50 +1175,6 @@ function AIProviderTab() {
         {testRes && (
           <p className={cn('text-xs mt-3 font-mono', testRes.ok ? 'text-success' : 'text-danger')}>{testRes.msg}</p>
         )}
-      </div>
-
-      {/* Autonomous settings */}
-      <div className="border-t border-surface-800 pt-6 space-y-4">
-        <div>
-          <h3 className="text-xs font-semibold text-white mb-0.5">Autonomous Mode</h3>
-          <p className="text-2xs text-surface-500">Allow AI to take automated remediation actions on incidents.</p>
-        </div>
-        <label className="flex items-center justify-between gap-4 cursor-pointer">
-          <div>
-            <p className="text-xs text-white font-medium">Enable Autonomous Actions</p>
-            <p className="text-2xs text-surface-500">AI will act without requiring manual approval</p>
-          </div>
-          <button
-            onClick={() => { setAutoEnabled(v => !v); setDirty(true) }}
-            className={cn('relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors',
-              autoEnabled ? 'bg-brand-500' : 'bg-surface-700')}>
-            <span className={cn('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform',
-              autoEnabled ? 'translate-x-5' : 'translate-x-0')} />
-          </button>
-        </label>
-        <label className="flex items-center justify-between gap-4 cursor-pointer">
-          <div>
-            <p className="text-xs text-white font-medium">Dry Run Mode</p>
-            <p className="text-2xs text-surface-500">Log actions but don't execute them (safe testing)</p>
-          </div>
-          <button
-            onClick={() => { setAutoDryRun(v => !v); setDirty(true) }}
-            className={cn('relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors',
-              autoDryRun ? 'bg-brand-500' : 'bg-surface-700')}>
-            <span className={cn('inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform',
-              autoDryRun ? 'translate-x-5' : 'translate-x-0')} />
-          </button>
-        </label>
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="text-2xs font-semibold text-surface-400 uppercase tracking-wider">Confidence Threshold</label>
-            <span className="text-xs font-mono text-brand-400">{autoConfidence}%</span>
-          </div>
-          <input type="range" min={50} max={100} value={autoConfidence}
-            onChange={e => { setAutoConfidence(Number(e.target.value)); setDirty(true) }}
-            className="w-full accent-brand-500" />
-          <p className="text-2xs text-surface-500 mt-1">AI will only act when confidence = {autoConfidence}%</p>
-        </div>
       </div>
 
       {/* FinOps rates */}
@@ -2231,7 +2209,7 @@ function AboutTab() {
         </div>
         <div className="grid grid-cols-2 gap-3">
           {[
-            { label: 'Version',     value: '1.6.26' },
+            { label: 'Version',     value: '1.8.26' },
             { label: 'Framework',   value: 'Next.js 15 App Router' },
             { label: 'Runtime',     value: 'Node.js 20' },
             { label: 'License',     value: 'Private' },
@@ -2490,7 +2468,6 @@ type EditForm = {
   name: string; provider: string; region: string; environment: string; description: string
   k8sUrl: string; promUrl: string; alertmanagerUrl: string
   lokiUrl: string; jaegerUrl: string; grafanaUrl: string
-  couchbaseUrl: string; couchbaseUser: string; couchbasePass: string
 }
 
 function EditClusterModal({ cluster, onClose, onSaved }: {
@@ -2510,9 +2487,6 @@ function EditClusterModal({ cluster, onClose, onSaved }: {
     lokiUrl:         cluster.lokiUrl         ?? '',
     jaegerUrl:       cluster.jaegerUrl       ?? '',
     grafanaUrl:      cluster.grafanaUrl      ?? '',
-    couchbaseUrl:    cluster.couchbaseUrl    ?? '',
-    couchbaseUser:   cluster.couchbaseUser   ?? '',
-    couchbasePass:   cluster.couchbasePass   ?? '',
   })
   const [saving, setSaving] = useState(false)
   const [error,  setError]  = useState<string | null>(null)
@@ -2617,13 +2591,6 @@ function EditClusterModal({ cluster, onClose, onSaved }: {
           {field('lokiUrl',         'Loki URL',           'http://loki:3100')}
           {field('jaegerUrl',       'Jaeger URL',         'http://jaeger:16686')}
           {field('grafanaUrl',      'Grafana URL',        'http://grafana:3000')}
-
-          <div className="pt-1 pb-0.5">
-            <p className="text-2xs text-surface-500 uppercase tracking-wider font-medium">Couchbase (direct NodePort � not via K8s proxy)</p>
-          </div>
-          {field('couchbaseUrl',  'Couchbase URL',      'http://node-ip:18091')}
-          {field('couchbaseUser', 'Couchbase User',     'Administrator')}
-          {field('couchbasePass', 'Couchbase Password', '��������', 'password')}
 
           <p className="text-2xs text-surface-600">
             Changing the K8s API URL will re-probe the cluster to update version and node count.
@@ -2730,7 +2697,7 @@ function ClustersTab() {
           <button onClick={load} className="p-1.5 rounded-lg hover:bg-surface-800 text-surface-400 hover:text-white transition-colors" title="Refresh">
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
-          <a href="/dashboard/settings/clusters"
+          <a href="/dashboard/settings/clusters?manage=1"
             className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-500 hover:bg-brand-600 text-white rounded-xl text-xs font-medium transition-colors">
             <Plus className="w-3.5 h-3.5" /> Add Cluster
           </a>
@@ -2751,7 +2718,7 @@ function ClustersTab() {
         <div className="rounded-2xl bg-surface-900 border border-surface-800 p-8 text-center">
           <Layers className="w-8 h-8 text-surface-600 mx-auto mb-2" />
           <p className="text-sm text-surface-400">No clusters registered yet.</p>
-          <a href="/dashboard/settings/clusters"
+          <a href="/dashboard/settings/clusters?manage=1"
             className="inline-flex items-center gap-1.5 mt-3 text-xs text-brand-400 hover:underline">
             <Plus className="w-3 h-3" /> Add your first cluster
           </a>
@@ -2814,7 +2781,7 @@ function ClustersTab() {
       )}
 
       {clusters.length > 0 && (
-        <a href="/dashboard/settings/clusters"
+        <a href="/dashboard/settings/clusters?manage=1"
           className="inline-flex items-center gap-1.5 text-xs text-brand-400 hover:underline">
           <ExternalLink className="w-3 h-3" /> Full cluster management page
         </a>
@@ -2835,10 +2802,6 @@ function SettingsInner() {
   const router = useRouter()
 
   const switchSection = (next: SectionId) => {
-    if (next === 'clusters') {
-      router.push('/dashboard/settings/clusters')
-      return
-    }
     if (_dirtySection && _dirtySection !== next) {
       if (!window.confirm(`Unsaved changes in ${_dirtySection} � leave without saving?`)) return
     }

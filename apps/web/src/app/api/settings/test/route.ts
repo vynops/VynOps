@@ -25,7 +25,7 @@ function checkRateLimit(email: string): boolean {
 }
 
 // ── POST /api/settings/test ──────────────────────────────────
-// body: { action: 'slack' | 'alertmanager' | 'groq', ...params }
+// body: { action: 'slack' | 'alertmanager' | 'ai', ...params }
 export async function POST(req: Request) {
   const session = await auth()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -65,6 +65,45 @@ export async function POST(req: Request) {
       if (!r.ok) return NextResponse.json({ ok: false, error: `Slack returned HTTP ${r.status}` })
       recordTestResult('slack', true, `Connected · ${latencyMs}ms`)
       return NextResponse.json({ ok: true, latencyMs, message: 'Test message sent to Slack' })
+    } catch (e: any) {
+      return NextResponse.json({ ok: false, error: e.message ?? 'Unreachable' })
+    }
+  }
+
+  // ── Microsoft Teams webhook ──────────────────────────────
+  if (action === 'teams') {
+    const url: string = body.url ?? ''
+    if (!url) return NextResponse.json({ ok: false, error: 'No Teams webhook URL provided' })
+    try {
+      const parsedUrl = new URL(url)
+      if (parsedUrl.protocol !== 'https:') {
+        return NextResponse.json({ ok: false, error: 'Teams webhook URL must use HTTPS' })
+      }
+    } catch {
+      return NextResponse.json({ ok: false, error: 'Invalid Teams webhook URL format' })
+    }
+    try {
+      const t0 = Date.now()
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          '@type': 'MessageCard',
+          '@context': 'http://schema.org/extensions',
+          summary: 'VynOps Teams connection verified',
+          themeColor: '22c55e',
+          title: 'VynOps — Microsoft Teams connection verified',
+          sections: [{ facts: [
+            { name: 'Status', value: 'Connected' },
+            { name: 'Source', value: 'VynOps Settings page test' },
+          ] }],
+        }),
+        signal: AbortSignal.timeout(K8S_TIMEOUT_MS),
+      })
+      const latencyMs = Date.now() - t0
+      if (!r.ok) return NextResponse.json({ ok: false, error: `Teams returned HTTP ${r.status}`, latencyMs })
+      recordTestResult('teams', true, `Connected · ${latencyMs}ms`)
+      return NextResponse.json({ ok: true, latencyMs, message: 'Test message sent to Microsoft Teams' })
     } catch (e: any) {
       return NextResponse.json({ ok: false, error: e.message ?? 'Unreachable' })
     }
@@ -120,6 +159,46 @@ export async function POST(req: Request) {
           ? `API key valid · ${model} is available`
           : `API key valid · ${model} not found — check model ID`,
       })
+    } catch (e: any) {
+      return NextResponse.json({ ok: false, error: e.message ?? 'Unreachable' })
+    }
+  }
+
+  // ── AI provider connection ───────────────────────────────
+  if (action === 'ai') {
+    const provider = body.provider ?? 'groq'
+    const apiKey: string = body.apiKey ?? ''
+    const model: string = body.model ?? ''
+    const baseUrl = String(body.baseUrl ?? '').replace(/\/$/, '')
+    if (!apiKey || apiKey.startsWith('****')) return NextResponse.json({ ok: false, error: 'Provide a valid API key (not masked value)' })
+    if (!model) return NextResponse.json({ ok: false, error: 'Select or enter a model first' })
+    const endpoints: Record<string, string> = {
+      groq: 'https://api.groq.com/openai/v1/models',
+      openai: 'https://api.openai.com/v1/models',
+      custom: `${baseUrl}/models`,
+    }
+    try {
+      const t0 = Date.now()
+      if (provider === 'google') {
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}?key=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(K8S_TIMEOUT_MS) })
+        const latencyMs = Date.now() - t0
+        if (!r.ok) return NextResponse.json({ ok: false, error: `Google returned HTTP ${r.status}`, latencyMs })
+        return NextResponse.json({ ok: true, latencyMs, message: `API key valid · ${model} is available` })
+      }
+      if (provider === 'anthropic') {
+        const r = await fetch('https://api.anthropic.com/v1/models', { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(K8S_TIMEOUT_MS) })
+        const latencyMs = Date.now() - t0
+        if (!r.ok) return NextResponse.json({ ok: false, error: `Anthropic returned HTTP ${r.status}`, latencyMs })
+        const models: string[] = ((await r.json()).data ?? []).map((m: any) => m.id)
+        return NextResponse.json({ ok: true, latencyMs, modelAvailable: models.includes(model), message: models.includes(model) ? `API key valid · ${model} is available` : `API key valid · ${model} not found — check model ID` })
+      }
+      if (!endpoints[provider]) return NextResponse.json({ ok: false, error: 'Custom provider requires a base URL' })
+      const r = await fetch(endpoints[provider], { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(K8S_TIMEOUT_MS) })
+      const latencyMs = Date.now() - t0
+      if (r.status === 401) return NextResponse.json({ ok: false, error: 'Invalid API key — unauthorized', latencyMs })
+      if (!r.ok) return NextResponse.json({ ok: false, error: `${provider} returned HTTP ${r.status}`, latencyMs })
+      const models: string[] = ((await r.json()).data ?? []).map((m: any) => m.id)
+      return NextResponse.json({ ok: true, latencyMs, modelAvailable: models.includes(model), message: models.includes(model) ? `API key valid · ${model} is available` : `API key valid · ${model} not found — check model ID` })
     } catch (e: any) {
       return NextResponse.json({ ok: false, error: e.message ?? 'Unreachable' })
     }
