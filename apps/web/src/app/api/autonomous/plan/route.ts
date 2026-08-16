@@ -1,7 +1,7 @@
 /**
  * POST /api/autonomous/plan
  *
- * Generates a multi-step remediation plan for an open incident using Groq/LLM.
+ * Generates a multi-step remediation plan for an open incident using the configured LLM.
  * Called by the autonomous loop every cycle for incidents without a plan yet.
  *
  * The LLM picks and sequences from a validated VOCABULARY of known-safe primitives ?
@@ -10,6 +10,10 @@
  * Plan stored in data/autonomous.plans.jsonl.
  * Returns { plan } or { skipped, reason }.
  */
+import { generateText }                                  from 'ai'
+import { createOpenAI }                                  from '@ai-sdk/openai'
+import { createGoogleGenerativeAI }                      from '@ai-sdk/google'
+import { createAnthropic }                                from '@ai-sdk/anthropic'
 import { NextResponse }                                  from 'next/server'
 import { readConfig }                                    from '@/app/api/settings/config/shared'
 import { manualStore, buildAutoIncidents }               from '@/app/api/incidents/shared'
@@ -31,17 +35,40 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 }
 
-// ?? Call Groq to generate a plan ??????????????????????????????????????????????
+function getPlanModel(): any | null {
+  const cfg = readConfig()
+  const provider = cfg.ai_provider ?? process.env.AI_PROVIDER ?? 'groq'
+  const apiKey = cfg.ai_api_key
+    ?? (provider === 'groq' ? cfg.groq_api_key : undefined)
+    ?? process.env.AI_API_KEY
+    ?? (provider === 'groq' ? process.env.GROQ_API_KEY : undefined)
+    ?? (provider === 'google' ? process.env.GOOGLE_GENERATIVE_AI_API_KEY : undefined)
+    ?? (provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : undefined)
+    ?? ''
+  const model = cfg.ai_model
+    ?? (provider === 'groq' ? cfg.groq_model : undefined)
+    ?? process.env.AI_MODEL
+    ?? (provider === 'groq' ? process.env.GROQ_MODEL : undefined)
+    ?? 'llama-3.3-70b-versatile'
+  const baseUrl = cfg.ai_base_url ?? process.env.AI_BASE_URL ?? ''
+
+  if (!apiKey) return null
+  if (provider === 'google') return createGoogleGenerativeAI({ apiKey })(model)
+  if (provider === 'anthropic') return createAnthropic({ apiKey })(model)
+
+  return createOpenAI({
+    apiKey,
+    baseURL: baseUrl || (provider === 'groq' ? 'https://api.groq.com/openai/v1' : undefined),
+  })(model)
+}
+
 async function generatePlan(
   inc: IncidentDoc,
   liveContext: string,
   allowedActions: string[],
 ): Promise<{ reasoning: string; confidence: number; steps: PlanStep[]; namespace: string } | null> {
-  const apiKey = process.env.GROQ_API_KEY ?? ''
-  if (!apiKey) return null
-
-  const cfg   = readConfig()
-  const model = cfg.groq_model ?? process.env.GROQ_MODEL ?? 'meta-llama/llama-4-scout-17b-16e-instruct'
+  const model = getPlanModel()
+  if (!model) return null
 
   const vocabList = Object.entries(ACTION_VOCAB)
     .filter(([id]) => allowedActions.includes(id) || ACTION_VOCAB[id]?.risk === 'low')
@@ -83,20 +110,14 @@ Rules:
 - If you cannot determine a safe plan, return confidence: 0 and steps: []`
 
   try {
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages:    [{ role: 'user', content: prompt }],
-        temperature: 0.2,
-        max_tokens:  800,
-      }),
-      signal: AbortSignal.timeout(20_000),
+    const result = await generateText({
+      model,
+      prompt,
+      temperature: 0.2,
+      maxTokens: 800,
+      abortSignal: AbortSignal.timeout(20_000),
     })
-    if (!r.ok) return null
-    const data   = await r.json()
-    const raw    = data.choices?.[0]?.message?.content ?? ''
+    const raw = result.text
     const parsed = JSON.parse(raw.trim())
 
     // Validate steps against vocabulary, preserve replicas for scale_deployment
@@ -275,3 +296,4 @@ export async function POST(req: Request) {
     ranAt:     nowIso,
   })
 }
+
