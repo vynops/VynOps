@@ -96,3 +96,11 @@ api-auth-matrix.tsv
 *.ts1
 *.tsx1
 README.md
+
+# Runtime app data
+apps/web/.data/
+apps/web/.data/*.json
+
+# Editor / temporary backup files
+*.ts2
+*.tsx2

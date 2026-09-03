@@ -136,7 +136,7 @@ export async function POST(req: Request) {
   // ── Groq API key ──────────────────────────────────────────
   if (action === 'groq') {
     const apiKey: string = body.apiKey ?? ''
-    const model:  string = body.model  ?? 'llama-3.3-70b-versatile'
+    const model:  string = body.model  ?? 'openai/gpt-oss-120b'
     if (!apiKey || apiKey === '****' || apiKey.startsWith('****')) {
       return NextResponse.json({ ok: false, error: 'Provide a valid API key (not masked value)' })
     }
@@ -153,7 +153,7 @@ export async function POST(req: Request) {
       const models: string[] = (data.data ?? []).map((m: any) => m.id)
       const modelAvailable = models.includes(model)
       return NextResponse.json({
-        ok: true, latencyMs,
+        ok: modelAvailable, latencyMs,
         modelAvailable,
         message: modelAvailable
           ? `API key valid · ${model} is available`
@@ -167,10 +167,16 @@ export async function POST(req: Request) {
   // ── AI provider connection ───────────────────────────────
   if (action === 'ai') {
     const provider = body.provider ?? 'groq'
-    const apiKey: string = body.apiKey ?? ''
+    const requestedApiKey: string = body.apiKey ?? ''
+    const config = readConfig()
+    const apiKey: string = requestedApiKey.startsWith('****') || requestedApiKey === '***configured***'
+      ? (provider === 'groq' ? config.groq_api_key ?? process.env.GROQ_API_KEY ?? '' : config.ai_api_key ?? process.env.AI_API_KEY ?? '')
+      : requestedApiKey
     const model: string = body.model ?? ''
     const baseUrl = String(body.baseUrl ?? '').replace(/\/$/, '')
-    if (!apiKey || apiKey.startsWith('****')) return NextResponse.json({ ok: false, error: 'Provide a valid API key (not masked value)' })
+    if (!apiKey || apiKey.startsWith('****') || apiKey === '***configured***') {
+      return NextResponse.json({ ok: false, error: `No API key configured for ${provider}` })
+    }
     if (!model) return NextResponse.json({ ok: false, error: 'Select or enter a model first' })
     const endpoints: Record<string, string> = {
       groq: 'https://api.groq.com/openai/v1/models',
@@ -198,7 +204,7 @@ export async function POST(req: Request) {
       if (r.status === 401) return NextResponse.json({ ok: false, error: 'Invalid API key — unauthorized', latencyMs })
       if (!r.ok) return NextResponse.json({ ok: false, error: `${provider} returned HTTP ${r.status}`, latencyMs })
       const models: string[] = ((await r.json()).data ?? []).map((m: any) => m.id)
-      return NextResponse.json({ ok: true, latencyMs, modelAvailable: models.includes(model), message: models.includes(model) ? `API key valid · ${model} is available` : `API key valid · ${model} not found — check model ID` })
+      return NextResponse.json({ ok: provider === 'groq' ? models.includes(model) : true, latencyMs, modelAvailable: models.includes(model), message: models.includes(model) ? `API key valid · ${model} is available` : `API key valid · ${model} not found — check model ID` })
     } catch (e: any) {
       return NextResponse.json({ ok: false, error: e.message ?? 'Unreachable' })
     }

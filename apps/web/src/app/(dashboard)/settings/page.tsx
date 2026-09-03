@@ -989,7 +989,7 @@ function NotificationsTab() {
 
 // -- AI Provider tab -------------------------------------------------------
 const AI_PROVIDERS = [
-  { id: 'groq',      label: 'Groq',      defaultModel: 'llama-3.3-70b-versatile',                   keyLabel: 'Groq API Key', keyPlaceholder: 'gsk_...' },
+  { id: 'groq',      label: 'Groq',      defaultModel: 'openai/gpt-oss-120b',                    keyLabel: 'Groq API Key', keyPlaceholder: 'gsk_...' },
   { id: 'openai',    label: 'OpenAI',    defaultModel: 'gpt-4o-mini',                          keyLabel: 'OpenAI API Key', keyPlaceholder: 'sk-...' },
   { id: 'google',    label: 'Google',    defaultModel: 'gemini-2.0-flash',                    keyLabel: 'Google AI API Key', keyPlaceholder: 'AIza...' },
   { id: 'anthropic', label: 'Claude',    defaultModel: 'claude-3-5-sonnet-latest',            keyLabel: 'Anthropic API Key', keyPlaceholder: 'sk-ant-...' },
@@ -999,10 +999,9 @@ const AI_PROVIDERS = [
 function AIProviderTab() {
   const [provider, setProvider] = useState('groq')
   const [apiKey,   setApiKey]   = useState('')
-  const [model,    setModel]    = useState('llama-3.3-70b-versatile')
+  const [model,    setModel]    = useState('openai/gpt-oss-120b')
   const [baseUrl,  setBaseUrl]  = useState('')
   const [keyHidden,setKeyHidden]= useState(true)
-  const [revealingKey, setRevealingKey] = useState(false)
   const [source,   setSource]   = useState<Record<string, string>>({})
   const [loading,  setLoading]  = useState(true)
   const [saving,   setSaving]   = useState(false)
@@ -1047,7 +1046,7 @@ function AIProviderTab() {
       finops_storage_per_gib_mo:       finopsStorage,
     }
     // Only send key if user typed a new one (not the masked value)
-    if (apiKey && !apiKey.startsWith('****')) payload.ai_api_key = apiKey
+    if (apiKey && apiKey !== '***configured***') payload.ai_api_key = apiKey
     else payload.ai_api_key = SENTINEL
     try {
       const r = await fetch('/api/settings/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
@@ -1059,7 +1058,8 @@ function AIProviderTab() {
 
   const testConnection = async () => {
     setTesting(true); setTestRes(null)
-    const keyToTest = apiKey.startsWith('****') ? '' : apiKey
+    // The server resolves the masked sentinel to the stored secret.
+    const keyToTest = apiKey
     try {
       const r = await fetch('/api/settings/test', {
         method: 'POST',
@@ -1111,24 +1111,9 @@ function AIProviderTab() {
             placeholder={AI_PROVIDERS.find(p => p.id === provider)?.keyPlaceholder}
             className="w-full bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-2.5 text-sm text-white font-mono outline-none transition-all pr-9"
           />
-          <button onClick={async () => {
-            if (!keyHidden) { setKeyHidden(true); return }
-            if (!apiKey.startsWith('****')) { setKeyHidden(false); return }
-            setRevealingKey(true)
-            try {
-              const r = await fetch('/api/settings/config?reveal=1')
-              const d = await r.json()
-              if (!r.ok) throw new Error(d.error ?? 'Unable to reveal API key')
-              const revealed = d.config?.ai_api_key || d.config?.groq_api_key || ''
-              if (!revealed) throw new Error('No saved API key is configured')
-              setApiKey(revealed)
-              setKeyHidden(false)
-              setError(null)
-            } catch (e: any) { setError(e.message ?? 'Unable to reveal API key') }
-            finally { setRevealingKey(false) }
-          }} disabled={revealingKey}
+          <button onClick={() => setKeyHidden(hidden => !hidden)}
             className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-300">
-            {revealingKey ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : keyHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            {keyHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
           </button>
         </div>
         <p className="text-2xs text-surface-600 mt-1">Keys are stored in the server runtime configuration and masked in this form.</p>

@@ -1,4 +1,6 @@
-﻿import { streamText, tool } from 'ai'
+﻿const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-120b'
+const RETIRED_GROQ_MODELS = new Set(['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768', 'gemma2-9b-it'])
+import { streamText, tool } from 'ai'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createAnthropic } from '@ai-sdk/anthropic'
@@ -71,7 +73,7 @@ async function apiGet(path: string) {
 function getModel(): any {
   let provider = process.env.AI_PROVIDER ?? 'groq'
   let apiKey = process.env.AI_API_KEY ?? process.env.GROQ_API_KEY ?? ''
-  let model = process.env.AI_MODEL ?? process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile'
+  let model = process.env.AI_MODEL ?? process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL
   let baseUrl = process.env.AI_BASE_URL ?? ''
   try {
     const cfg = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
@@ -84,6 +86,7 @@ function getModel(): any {
       model = cfg.ai_model ?? cfg.groq_model ?? model
     }
   } catch {}
+  if (provider === 'groq' && RETIRED_GROQ_MODELS.has(model)) model = GROQ_DEFAULT_MODEL
   if (provider === 'google') return createGoogleGenerativeAI({ apiKey })(model)
   if (provider === 'anthropic') return createAnthropic({ apiKey })(model)
   const openai = createOpenAI({ apiKey, baseURL: baseUrl || (provider === 'groq' ? 'https://api.groq.com/openai/v1' : undefined) })
@@ -157,9 +160,9 @@ const tools = {
   get_pod_status: tool({
     description: 'List pods by phase/namespace. Finds CrashLoopBackOff, Pending, Failed pods.',
     parameters: z.object({
-      phase:     z.enum(['Running', 'Pending', 'Failed', 'Succeeded', 'Unknown', 'all']).optional().default('all'),
-      namespace: z.string().optional().describe('Filter by namespace. Omit for all namespaces.'),
-      limit:     z.number().min(1).max(50).optional().default(20),
+      phase:     z.enum(['Running', 'Pending', 'Failed', 'Succeeded', 'Unknown', 'all']).describe('Pod phase to include. Use all for every phase.'),
+      namespace: z.string().describe('Namespace to filter. Use an empty string for all namespaces.'),
+      limit:     z.number().min(1).max(50).describe('Maximum number of pods to return.'),
     }),
     execute: async ({ phase, namespace, limit }) => {
       const ns   = namespace ? `/namespaces/${encodeURIComponent(namespace)}` : ''
@@ -233,8 +236,8 @@ const tools = {
   get_incidents: tool({
     description: 'Active incidents from Prometheus alerts. Use for outage and SLA questions.',
     parameters: z.object({
-      severity: z.enum(['critical', 'high', 'medium', 'low', 'all']).optional().default('all'),
-      state:    z.enum(['open', 'investigating', 'resolved', 'all']).optional().default('open'),
+      severity: z.enum(['critical', 'high', 'medium', 'low', 'all']).describe('Incident severity. Use all for every severity.'),
+      state:    z.enum(['open', 'investigating', 'resolved', 'all']).describe('Incident state. Use all for every state.'),
     }),
     execute: async ({ severity, state }) => {
       const data = await apiGet('/api/incidents')
@@ -259,8 +262,8 @@ const tools = {
   get_alerts: tool({
     description: 'Firing Prometheus alerts filtered by severity.',
     parameters: z.object({
-      severity: z.enum(['critical', 'warning', 'info', 'all']).optional().default('all'),
-      limit:    z.number().min(1).max(30).optional().default(15),
+      severity: z.enum(['critical', 'warning', 'info', 'all']).describe('Alert severity. Use all for every severity.'),
+      limit:    z.number().min(1).max(30).describe('Maximum alerts to return.'),
     }),
     execute: async ({ severity, limit }) => {
       const data = await promGet('/api/v1/alerts')
@@ -286,9 +289,9 @@ const tools = {
   get_events: tool({
     description: 'K8s Warning events: OOMKill, BackOff, scheduling failures, image pull errors.',
     parameters: z.object({
-      namespace: z.string().optional().describe('Filter by namespace.'),
-      reason:    z.string().optional().describe('Filter by reason e.g. OOMKilled, BackOff, FailedScheduling'),
-      limit:     z.number().min(1).max(30).optional().default(20),
+      namespace: z.string().describe('Filter by namespace. Use an empty string for all namespaces.'),
+      reason:    z.string().describe('Filter by reason. Use an empty string for any reason.'),
+      limit:     z.number().min(1).max(30).describe('Maximum events to return.'),
     }),
     execute: async ({ namespace, reason, limit }) => {
       const ns   = namespace ? `/namespaces/${encodeURIComponent(namespace)}` : ''
@@ -311,8 +314,8 @@ const tools = {
   get_service_metrics: tool({
     description: 'Deployment availability and restart rates for SLO analysis.',
     parameters: z.object({
-      service:   z.string().optional().describe('Filter by deployment name (partial match)'),
-      namespace: z.string().optional().describe('Filter by namespace'),
+      service:   z.string().describe('Filter by deployment name (partial match). Use an empty string for all services.'),
+      namespace: z.string().describe('Filter by namespace. Use an empty string for all namespaces.'),
     }),
     execute: async ({ service, namespace }) => {
       const ns   = namespace ? `/namespaces/${encodeURIComponent(namespace)}` : ''
@@ -367,9 +370,9 @@ const tools = {
     parameters: z.object({
       namespace: z.string().describe('Kubernetes namespace'),
       pod:       z.string().describe('Pod name'),
-      container: z.string().optional().describe('Container name — omit to use the default container'),
-      tailLines: z.number().default(100).describe('Number of log lines to fetch (max 200)'),
-      previous:  z.boolean().default(false).describe('true = fetch logs from previous crashed container instance — use for CrashLoopBackOff'),
+      container: z.string().describe('Container name. Use an empty string for the default container.'),
+      tailLines: z.number().describe('Number of log lines to fetch, maximum 200.'),
+      previous:  z.boolean().describe('True to fetch logs from the previous crashed container instance.'),
     }),
     execute: async ({ namespace, pod, container, tailLines, previous }) => {
       const params = new URLSearchParams({ tailLines: String(Math.min(tailLines, 200)), timestamps: 'true' })
@@ -404,7 +407,7 @@ const tools = {
     parameters: z.object({
       namespace:     z.string().describe('Kubernetes namespace'),
       pod:           z.string().describe('Pod name'),
-      windowMinutes: z.number().default(60).describe('Time window in minutes'),
+      windowMinutes: z.number().describe('Time window in minutes.'),
     }),
     execute: async ({ namespace, pod, windowMinutes }) => {
       try {
@@ -421,8 +424,8 @@ const tools = {
   predict_failures: tool({
     description: 'Failure risk scores per workload using restart trends, OOM events, CPU throttling, memory pressure.',
     parameters: z.object({
-      namespace:     z.string().optional().describe('Limit analysis to namespace. Omit for cluster-wide.'),
-      lookbackHours: z.number().default(6).describe('History window in hours'),
+      namespace:     z.string().describe('Limit analysis to namespace. Use an empty string for cluster-wide.'),
+      lookbackHours: z.number().describe('History window in hours.'),
     }),
     execute: async ({ namespace, lookbackHours }) => {
       const win  = `${lookbackHours}h`
@@ -471,7 +474,7 @@ const tools = {
   forecast_capacity: tool({
     description: 'Forecast CPU/memory/disk/pod exhaustion date via Prometheus linear regression.',
     parameters: z.object({
-      forecastDays: z.number().default(7).describe('Days to forecast ahead'),
+      forecastDays: z.number().describe('Days to forecast ahead.'),
     }),
     execute: async ({ forecastDays }) => {
       const secs = forecastDays * 86400
@@ -516,7 +519,7 @@ const tools = {
   predict_sla_breach: tool({
     description: 'SLO breach risk per service using availability, error rates, restart trends.',
     parameters: z.object({
-      namespace: z.string().optional().describe('Target namespace. Omit for cluster-wide.'),
+      namespace: z.string().describe('Target namespace. Use an empty string for cluster-wide.'),
     }),
     execute: async ({ namespace }) => {
       const nsP = namespace ? `/namespaces/${namespace}` : ''
@@ -549,7 +552,7 @@ const tools = {
     parameters: z.object({
       namespace:    z.string().describe('Kubernetes namespace'),
       resourceName: z.string().describe('Failing resource name'),
-      resourceKind: z.enum(['Deployment', 'Service', 'Pod', 'Node']).default('Deployment'),
+      resourceKind: z.enum(['Deployment', 'Service', 'Pod', 'Node']).describe('Kind of the target resource.'),
     }),
     execute: async ({ namespace, resourceName, resourceKind }) => {
       const [pods, svcs, ingresses, hpas, events] = await Promise.all([
@@ -572,8 +575,8 @@ const tools = {
   multi_layer_correlate: tool({
     description: '7-layer causal chain (L1 infra → L7 app) to find true root cause of an incident.',
     parameters: z.object({
-      namespace:     z.string().optional().describe('Focus namespace — omit for cluster-wide'),
-      focusResource: z.string().optional().describe('Optional resource name to center on'),
+      namespace:     z.string().describe('Focus namespace. Use an empty string for cluster-wide.'),
+      focusResource: z.string().describe('Resource name to center on. Use an empty string for none.'),
     }),
     execute: async ({ namespace }) => {
       const nsP = namespace ? `/namespaces/${namespace}` : ''
@@ -621,8 +624,8 @@ const tools = {
   recommend_cost_optimization: tool({
     description: 'Over-provisioned workloads and $/month savings from right-sizing via Prometheus usage vs requests.',
     parameters: z.object({
-      namespace: z.string().optional(),
-      threshold: z.number().default(30).describe('Utilization % below which workloads are over-provisioned'),
+      namespace: z.string().describe('Target namespace. Use an empty string for all namespaces.'),
+      threshold: z.number().describe('Utilization percentage below which workloads are over-provisioned.'),
     }),
     execute: async ({ namespace, threshold }) => {
       const nsP = namespace ? `/namespaces/${namespace}` : ''
@@ -662,7 +665,7 @@ const tools = {
   recommend_scaling: tool({
     description: 'High-utilization workloads needing more replicas or HPA; SPOF single-replica deployments.',
     parameters: z.object({
-      namespace: z.string().optional(),
+      namespace: z.string().describe('Target namespace. Use an empty string for all namespaces.'),
     }),
     execute: async ({ namespace }) => {
       const nsP = namespace ? `/namespaces/${namespace}` : ''
@@ -694,7 +697,7 @@ const tools = {
   recommend_security: tool({
     description: 'Security scan: privileged containers, root UID, missing limits, :latest tags, hostPID/Network/IPC, missing NetworkPolicies.',
     parameters: z.object({
-      namespace: z.string().optional().describe('Limit scan to namespace. Omit for cluster-wide.'),
+      namespace: z.string().describe('Limit scan to namespace. Use an empty string for cluster-wide.'),
     }),
     execute: async ({ namespace }) => {
       const nsP = namespace ? `/namespaces/${namespace}` : ''
@@ -735,8 +738,8 @@ const tools = {
     description: 'Targeted remediation steps for a problem — detects crash loop, OOM, image pull, and pending failures from live pod state.',
     parameters: z.object({
       problem:   z.string().describe('Problem description'),
-      namespace: z.string().optional(),
-      resource:  z.string().optional().describe('Target deployment name'),
+      namespace: z.string().describe('Target namespace. Use an empty string when unknown.'),
+      resource:  z.string().describe('Target deployment name. Use an empty string when unknown.'),
     }),
     execute: async ({ problem, namespace, resource }) => {
       const [podData, deployData, eventData] = await Promise.all([
@@ -810,8 +813,8 @@ const tools = {
     description: 'Multi-phase remediation workflow with approval gates, risk ratings, rollback commands.',
     parameters: z.object({
       problem:   z.string().describe('Problem description — be specific'),
-      namespace: z.string().optional(),
-      resource:  z.string().optional().describe('Target deployment or resource name'),
+      namespace: z.string().describe('Target namespace. Use an empty string when unknown.'),
+      resource:  z.string().describe('Target deployment or resource name. Use an empty string when unknown.'),
     }),
     execute: async ({ problem, namespace, resource }) => {
       const [podData, deployData] = await Promise.all([
@@ -846,9 +849,9 @@ const tools = {
     description: 'Silence a Prometheus alert in Alertmanager for a specified duration. Use for known false positives like k3d control-plane alerts.',
     parameters: z.object({
       alertname:     z.string().describe('Alert name to silence (e.g. KubeControllerManagerDown)'),
-      durationHours: z.number().default(168).describe('Silence duration in hours (default 7 days)'),
+      durationHours: z.number().describe('Silence duration in hours.'),
       reason:        z.string().describe('Reason for silencing — will appear in Alertmanager UI'),
-      namespace:     z.string().optional().describe('Optional: also match on namespace label'),
+      namespace:     z.string().describe('Optional namespace label. Use an empty string for none.'),
     }),
     execute: async ({ alertname, durationHours, reason, namespace }) => {
       const AM = await resolveAlertmanagerUrl()
@@ -875,10 +878,10 @@ const tools = {
     description: 'K8s operation (restart/scale/delete/cordon). Dry-run by default; set dryRun:false for live execution.',
     parameters: z.object({
       action:   z.enum(['restart_deployment', 'scale_deployment', 'delete_pod', 'cordon_node', 'uncordon_node']),
-      namespace: z.string().optional(),
+      namespace: z.string().describe('Target namespace. Use an empty string for default.'),
       name:      z.string().describe('Resource name'),
-      replicas:  z.number().optional().describe('For scale_deployment'),
-      dryRun:    z.boolean().default(true).describe('Set false only when user explicitly approves'),
+      replicas:  z.number().describe('Replica count for scale_deployment; use 0 for other actions.'),
+      dryRun:    z.boolean().describe('Set false only when the user explicitly approves live execution.'),
     }),
     execute: async ({ action, namespace, name, replicas, dryRun }) => {
       const K8S = await resolveK8sUrl()
@@ -980,7 +983,7 @@ export async function POST(req: Request) {
         try {
           const entry = {
             ts:               new Date().toISOString(),
-            model:            process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
+            model:            process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL,
             promptTokens:     usage.promptTokens,
             completionTokens: usage.completionTokens,
             totalTokens:      usage.totalTokens,

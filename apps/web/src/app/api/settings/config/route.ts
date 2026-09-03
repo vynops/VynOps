@@ -12,21 +12,17 @@ import {
 // Fields whose full value must be masked in GET responses
 const SECRET_FIELDS = new Set(['groq_api_key', 'ai_api_key', 'pagerduty_routing_key', 'smtp_pass'])
 const SENTINEL      = '__UNCHANGED__'
+const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-120b'
+const RETIRED_GROQ_MODELS = new Set(['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768', 'gemma2-9b-it'])
 
 function maskSecret(value: string): string {
-  if (!value || value.length < 8) return '****'
-  return `****${value.slice(-4)}`
+  return value ? '***configured***' : ''
 }
 
 // ── GET — load merged config (env fallbacks, secrets masked) ──
 export async function GET(req: Request) {
   const session = await auth()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const reveal = new URL(req.url).searchParams.get('reveal') === '1'
-  if (reveal && (session.user as any)?.role !== 'admin') {
-    return NextResponse.json({ error: 'Forbidden — admin role required' }, { status: 403 })
-  }
 
   const stored = readConfig()
   const configuredProvider = stored.ai_provider ?? (process.env.AI_PROVIDER as RuntimeConfig['ai_provider']) ?? 'groq'
@@ -49,10 +45,14 @@ export async function GET(req: Request) {
     alert_email:             stored.alert_email             ?? process.env.ALERT_EMAIL             ?? '',
     alert_webhook_url:       stored.alert_webhook_url       ?? process.env.ALERT_WEBHOOK_URL       ?? '',
     groq_api_key:            stored.groq_api_key            ?? process.env.GROQ_API_KEY            ?? '',
-    groq_model:              stored.groq_model              ?? process.env.GROQ_MODEL              ?? 'llama-3.3-70b-versatile',
+    groq_model:              stored.groq_model              ?? process.env.GROQ_MODEL              ?? GROQ_DEFAULT_MODEL,
     ai_provider:             configuredProvider,
     ai_api_key:              stored.ai_api_key              ?? process.env.AI_API_KEY              ?? providerEnvKey ?? '',
-    ai_model:                stored.ai_model                ?? process.env.AI_MODEL                ?? '',
+    ai_model:                stored.ai_model && !(configuredProvider === 'groq' && RETIRED_GROQ_MODELS.has(stored.ai_model))
+      ? stored.ai_model
+      : process.env.AI_MODEL && !(configuredProvider === 'groq' && RETIRED_GROQ_MODELS.has(process.env.AI_MODEL))
+        ? process.env.AI_MODEL
+        : configuredProvider === 'groq' ? GROQ_DEFAULT_MODEL : '',
     ai_base_url:             stored.ai_base_url             ?? process.env.AI_BASE_URL             ?? '',
     notify_on:               stored.notify_on               ?? {},
     integrations_enabled:    stored.integrations_enabled    ?? {},
@@ -70,9 +70,6 @@ export async function GET(req: Request) {
   const safe: Record<string, any> = { ...merged }
   for (const field of SECRET_FIELDS) {
     if (safe[field]) safe[field] = maskSecret(safe[field] as string)
-  }
-  if (reveal) {
-    for (const field of SECRET_FIELDS) safe[field] = merged[field]
   }
 
   // Tell the client which fields are sourced from env vs runtime file
@@ -211,4 +208,3 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true })
 }
-
