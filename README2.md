@@ -697,6 +697,8 @@ Then open a Pull Request.
 | **VynDB** | Database operations | [vynops/VynDB](https://github.com/vynops/VynDB) |
 | **VynDC** | Data center management | [vynops/VynDC](https://github.com/vynops/VynDC) |
 | **VynCICD** | CI/CD pipeline management | [vynops/VynCICD](https://github.com/vynops/VynCICD) |
+| **VynHana** | SAP HANA Database management | [vynops/VynHANA](https://github.com/vynops/VynHANA) |
+| **VynSAP** | SAP ERP management | [vynops/VynSAP](https://github.com/vynops/VynSAP) |
 
 ---
 ## License
