@@ -33,11 +33,23 @@ Built on **Next.js 15 App Router** with a real-time custom WebSocket server, Vyn
 
 ## Screenshots
 
-> _Screenshots coming soon — contributions welcome!_
-
-| Dashboard | AI Copilot | Incident Detail |
-|-----------|------------|----------------|
-| _(coming soon)_ | _(coming soon)_ | _(coming soon)_ |
+| Login | Operations Overview |
+|---|---|
+| <a href="screenshots/Screenshot%202026-09-07%20122230.png"><img src="screenshots/Screenshot%202026-09-07%20122230.png" width="100%" alt="VynOps sign-in screen" /></a> | <a href="screenshots/Screenshot%202026-09-07%20122727.png"><img src="screenshots/Screenshot%202026-09-07%20122727.png" width="100%" alt="Operations overview with cluster health and AI insights" /></a> |
+| Observability Metrics | Kubernetes Pods |
+| <a href="screenshots/Screenshot%202026-09-07%20122754.png"><img src="screenshots/Screenshot%202026-09-07%20122754.png" width="100%" alt="Observability metrics from Prometheus" /></a> | <a href="screenshots/Screenshot%202026-09-07%20122821.png"><img src="screenshots/Screenshot%202026-09-07%20122821.png" width="100%" alt="Kubernetes pod status and workload view" /></a> |
+| Cluster Infrastructure | Service Topology |
+| <a href="screenshots/Screenshot%202026-09-07%20122852.png"><img src="screenshots/Screenshot%202026-09-07%20122852.png" width="100%" alt="Cluster infrastructure resource overview" /></a> | <a href="screenshots/Screenshot%202026-09-07%20122927.png"><img src="screenshots/Screenshot%202026-09-07%20122927.png" width="100%" alt="Live Kubernetes service topology visualizer" /></a> |
+| Prometheus Alerts | Incident Command Center |
+| <a href="screenshots/Screenshot%202026-09-07%20122956.png"><img src="screenshots/Screenshot%202026-09-07%20122956.png" width="100%" alt="Prometheus alert management view" /></a> | <a href="screenshots/Screenshot%202026-09-07%20123022.png"><img src="screenshots/Screenshot%202026-09-07%20123022.png" width="100%" alt="Incident Command Center with SLA status" /></a> |
+| Deployment History | AI Copilot |
+| <a href="screenshots/Screenshot%202026-09-07%20123047.png"><img src="screenshots/Screenshot%202026-09-07%20123047.png" width="100%" alt="Kubernetes deployment history" /></a> | <a href="screenshots/Screenshot%202026-09-07%20123105.png"><img src="screenshots/Screenshot%202026-09-07%20123105.png" width="100%" alt="AI Copilot investigation workspace" /></a> |
+| Autonomous Healing | Automation Studio |
+| <a href="screenshots/Screenshot%202026-09-07%20123124.png"><img src="screenshots/Screenshot%202026-09-07%20123124.png" width="100%" alt="Kubernetes autonomous healing configuration" /></a> | <a href="screenshots/Screenshot%202026-09-07%20123142.png"><img src="screenshots/Screenshot%202026-09-07%20123142.png" width="100%" alt="Automation Studio remediation runbook" /></a> |
+| Security Posture | FinOps |
+| <a href="screenshots/Screenshot%202026-09-07%20123202.png"><img src="screenshots/Screenshot%202026-09-07%20123202.png" width="100%" alt="Kubernetes security posture and CIS benchmark" /></a> | <a href="screenshots/Screenshot%202026-09-07%20123220.png"><img src="screenshots/Screenshot%202026-09-07%20123220.png" width="100%" alt="FinOps cost and resource efficiency dashboard" /></a> |
+| Analytics & SLA | Connected Data Sources |
+| <a href="screenshots/Screenshot%202026-09-07%20123246.png"><img src="screenshots/Screenshot%202026-09-07%20123246.png" width="100%" alt="Analytics and SLA dashboard" /></a> | <a href="screenshots/Screenshot%202026-09-07%20123311.png"><img src="screenshots/Screenshot%202026-09-07%20123311.png" width="100%" alt="Kubernetes and Prometheus connection settings" /></a> |
 
 ---
 
