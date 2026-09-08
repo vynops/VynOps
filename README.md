@@ -1,4 +1,4 @@
-## Part of the VynOps Suite
+## VynOps Suite
 
 | Product | Purpose | Repo |
 |---|---|---|
