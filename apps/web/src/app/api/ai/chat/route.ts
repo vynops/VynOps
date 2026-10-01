@@ -21,6 +21,12 @@ const checkRateLimit = createRateLimiter(20, 60_000)
 
 const BASE = (process.env.NEXTAUTH_URL ?? 'http://localhost:3000').replace(/\/$/, '')
 
+function getAIErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/rate limit/i.test(message)) return 'AI provider rate limit reached. Please retry shortly.'
+  return message
+}
+
 // ── Live data helpers ─────────────────────────────────────────
 async function k8sGet(path: string) {
   const K8S = await resolveK8sUrl()
@@ -978,7 +984,7 @@ export async function POST(req: Request) {
       model: getModel() as any,
       system: systemPrompt,
       messages: trimmedMessages,
-      tools: safeTools, maxSteps: 5, temperature: 0.1, maxTokens: 1500,
+      tools: safeTools, maxSteps: 5, maxRetries: 0, temperature: 0.1, maxTokens: 1500,
       onFinish: ({ usage }) => {
         try {
           const entry = {
@@ -997,12 +1003,35 @@ export async function POST(req: Request) {
         } catch {}
       },
     })
-    return result.toDataStreamResponse({
-      getErrorMessage: (error) => {
-        if (error instanceof Error) return error.message
-        return String(error)
+    const response = result.toDataStreamResponse({
+      headers: {
+        'Cache-Control': 'no-cache, no-transform',
+        'Content-Encoding': 'none',
+        'X-Accel-Buffering': 'no',
+      },
+      getErrorMessage: getAIErrorMessage,
+    })
+    if (!response.body) return response
+
+    const reader = response.body.getReader()
+    const encoder = new TextEncoder()
+    const stableBody = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const chunk = await reader.read()
+          if (chunk.done) controller.close()
+          else controller.enqueue(chunk.value)
+        } catch (error) {
+          console.error('[ai/chat] stream error:', getAIErrorMessage(error))
+          controller.enqueue(encoder.encode(`3:${JSON.stringify(getAIErrorMessage(error))}\n`))
+          controller.close()
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason)
       },
     })
+    return new Response(stableBody, response)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error('[ai/chat] error:', msg)
