@@ -38,8 +38,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'AI Ops',
     items: [
       { id: 'ai-copilot',  label: 'AI Copilot',    href: '/ai-copilot',  icon: Bot,          highlight: true },
-      { id: 'autonomous',  label: 'Autonomous Ops', href: '/autonomous',  icon: BrainCircuit, highlight: true },
       { id: 'automation',  label: 'Automation',     href: '/automation',  icon: Zap },
+      { id: 'autonomous',  label: 'Autonomous Ops', href: '/autonomous',  icon: BrainCircuit, highlight: true },
     ],
   },
   {
