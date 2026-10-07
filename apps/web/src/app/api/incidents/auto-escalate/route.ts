@@ -1,11 +1,14 @@
 import { NextResponse }                                  from 'next/server'
-import { manualStore, buildAutoIncidents, persistStore } from '@/app/api/incidents/shared'
+import { manualStore, buildAutoIncidents, persistStore, escalationLocks } from '@/app/api/incidents/shared'
 import type { IncidentDoc }                              from '@/app/api/incidents/shared'
 import { readFileSync, existsSync }                      from 'fs'
 import { join }                                          from 'path'
 import type { OnCallSchedule, OnCallMember }             from '@/app/api/settings/oncall/shared'
+import { resolveEscalationContact } from '@/app/api/settings/oncall/shared'
 import { notifyEscalation }                              from '@/lib/notify'
 import { readConfig }                                    from '@/app/api/settings/config/shared'
+import { appendAuditLog } from '@/app/api/settings/config/shared'
+import { assertOperator } from '@/lib/rbac'
 
 const ONCALL_FILE = join(process.cwd(), 'data', 'oncall.json')
 const BASE        = (process.env.NEXTAUTH_URL ?? 'http://localhost:3000').replace(/\/$/, '')
@@ -35,7 +38,12 @@ function readSchedules(): OnCallSchedule[] {
  * Gated by the `auto_escalate_enabled` runtime config flag.
  * Only fires one level per incident per cycle.
  */
-export async function POST() {
+export async function POST(req: Request) {
+  const cron = !!process.env.CRON_SECRET && req.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
+  if (!cron) {
+    const deny = await assertOperator()
+    if (deny) return deny
+  }
   const cfg = readConfig()
   if (!cfg.auto_escalate_enabled) {
     return NextResponse.json({ ok: true, skipped: true, reason: 'Auto-escalation disabled in settings' })
@@ -44,11 +52,10 @@ export async function POST() {
   const schedules = readSchedules()
   const primary   = schedules[0]
   if (!primary?.escalationLevels?.length) {
-    return NextResponse.json({ ok: true, skipped: true, reason: 'No escalation levels defined' })
+    return NextResponse.json({ ok: false, skipped: true, failed: 1, reason: 'No escalation levels defined' })
   }
 
   const levels  = primary.escalationLevels
-  const members = primary.members
 
   // Build cumulative delay thresholds — level i fires when elapsed >= cumDelays[i]
   const cumDelays: number[] = []
@@ -71,8 +78,12 @@ export async function POST() {
   const now    = Date.now()
   const nowIso = new Date(now).toISOString()
   const fired: { id: string; level: number; contact: string }[] = []
+  let failed = 0
 
   for (const inc of open) {
+    if (escalationLocks.has(inc.id)) continue
+    escalationLocks.add(inc.id)
+    try {
     const elapsedMins  = (now - new Date(inc.createdAt).getTime()) / 60000
     const currentLevel = inc.escalationLevel ?? 0
 
@@ -91,9 +102,8 @@ export async function POST() {
     const nextLevel = nextLevelIdx + 1
     const levelDef  = levels[nextLevelIdx]
     const contact: OnCallMember | undefined =
-      (levelDef?.memberId ? members.find(m => m.id === levelDef.memberId) : undefined)
-      ?? members[nextLevelIdx % members.length]
-    if (!contact) continue
+      resolveEscalationContact(primary, nextLevelIdx, now)
+    if (!contact) { failed++; continue }
 
     const levelDesc = levelDef?.description ?? `Level ${nextLevel}`
     const slaMs     = new Date(inc.slaDeadline).getTime()
@@ -118,11 +128,20 @@ export async function POST() {
       slaInfo,
     })
 
+    if (!slackSent) {
+      failed++
+      if (!manualStore.has(inc.id)) manualStore.set(inc.id, structuredClone(inc))
+      manualStore.get(inc.id)!.timeline.push({ id: `tl-${inc.id}-${now}-autoesc-failed`, ts: nowIso, type: 'notification', title: `L${nextLevel} escalation delivery failed`, description: 'The escalation level was not advanced; delivery will be retried on the next cycle', actor: 'system', metadata: { level: nextLevel, delivered: false } })
+      persistStore()
+      continue
+    }
+
     // Promote to mutable store if auto-incident, then advance escalation level
     if (!manualStore.has(inc.id)) {
       manualStore.set(inc.id, structuredClone(inc))
     }
     const mutableInc          = manualStore.get(inc.id)!
+    if (mutableInc.state === 'resolved' || mutableInc.escalationLevel >= nextLevel) continue
     mutableInc.escalationLevel = nextLevel
     mutableInc.updatedAt       = nowIso
     mutableInc.timeline.push({
@@ -134,8 +153,12 @@ export async function POST() {
       actor:       'system',
     })
     manualStore.set(inc.id, mutableInc)
+    appendAuditLog({ ts: nowIso, user: 'system', action: 'incident.escalated', detail: `${inc.id}: L${nextLevel}` })
 
     fired.push({ id: inc.id, level: nextLevel, contact: contact.name })
+    } finally {
+      escalationLocks.delete(inc.id)
+    }
   }
 
   if (fired.length > 0) persistStore()
@@ -144,6 +167,7 @@ export async function POST() {
     ok:          true,
     checked:     open.length,
     fired:       fired.length,
+    failed,
     escalations: fired,
     ranAt:       nowIso,
   })

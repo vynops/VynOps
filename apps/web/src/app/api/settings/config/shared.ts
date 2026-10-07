@@ -63,18 +63,9 @@ export function writeConfig(cfg: RuntimeConfig): void {
 }
 
 export function appendAuditLog(entry: { ts: string; user: string; action: string; fields?: string[]; detail?: string }) {
-  try {
-    fs.appendFileSync(AUDIT_PATH, JSON.stringify(entry) + '\n')
-  } catch {
-    // non-critical
-  }
+  fs.appendFileSync(AUDIT_PATH, JSON.stringify(entry) + '\n')
 }
 
-export function appendNotifLog(entry: { ts: string; event: string; channels: string[]; summary: string; ok: boolean }) {
-  try {
-    fs.appendFileSync(NOTIF_LOG_PATH, JSON.stringify(entry) + '\n')
-  } catch {
-    // non-critical
-  }
+export function appendNotifLog(entry: { ts: string; event: string; channels: string[]; summary: string; ok: boolean; incidentId?: string; status?: string; attempts?: { channel: string; attempt: number; ok: boolean; status?: number }[] }) {
+  fs.appendFileSync(NOTIF_LOG_PATH, JSON.stringify(entry) + '\n')
 }
-

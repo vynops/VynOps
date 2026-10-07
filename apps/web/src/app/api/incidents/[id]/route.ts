@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { manualStore, buildAutoIncidents, persistStore } from '@/app/api/incidents/shared'
 import type { IncidentDoc } from '@/app/api/incidents/shared'
-import { assertOperator, assertSession } from '@/lib/rbac'
+import { assertOperator, assertSession, getSessionUserId } from '@/lib/rbac'
+import { appendAuditLog } from '@/app/api/settings/config/shared'
 
 function rehydrate(inc: IncidentDoc): IncidentDoc {
-  const now = Date.now()
+  const now = inc.state === 'resolved' && inc.resolvedAt ? new Date(inc.resolvedAt).getTime() : Date.now()
   return {
     ...inc,
     slaBreached:     now > new Date(inc.slaDeadline).getTime(),
@@ -39,12 +40,15 @@ export async function PATCH(
 ) {
   const deny = await assertOperator()
   if (deny) return deny
+  const actor = await getSessionUserId() ?? 'authenticated-user'
 
   const { id } = await context.params
   let body: Record<string, unknown>
   try { body = await req.json() } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'Invalid incident body' }, { status: 400 })
+  if (body.state !== undefined && !['open', 'acknowledged', 'investigating', 'mitigating', 'monitoring', 'resolved'].includes(String(body.state))) return NextResponse.json({ error: 'Invalid incident state' }, { status: 400 })
 
   // Ensure mutable copy exists in the manual store
   if (!manualStore.has(id)) {
@@ -55,6 +59,8 @@ export async function PATCH(
   }
 
   const inc = manualStore.get(id)!
+  if (typeof body.escalationLevel === 'number' && body.escalationLevel > inc.escalationLevel) return NextResponse.json({ error: 'Use the on-call escalation endpoint' }, { status: 400 })
+  const historyLength = inc.timeline.length
   const now    = Date.now()
   const nowIso = new Date(now).toISOString()
 
@@ -64,13 +70,17 @@ export async function PATCH(
     inc.state     = body.state
     inc.updatedAt = nowIso
     if (body.state === 'resolved' && !inc.resolvedAt) inc.resolvedAt = nowIso
+    if (body.state !== 'resolved') inc.resolvedAt = undefined
+    inc.notificationChannels = []
+    inc.notificationPending = true
+    inc.notificationEvent = body.state === 'resolved' ? 'incident.resolved' : prev === 'resolved' ? 'incident.reopened' : 'incident.updated'
     inc.timeline.push({
       id:          `tl-${id}-${now}-state`,
       ts:          nowIso,
       type:        'user_action',
       title:       `Status \u2192 ${body.state}`,
       description: `Transitioned ${prev} \u2192 ${body.state}${typeof body.actor === 'string' && body.actor ? ` by ${body.actor}` : ''}`,
-      actor:       typeof body.actor === 'string' ? body.actor : undefined,
+      actor,
     })
   }
 
@@ -85,7 +95,7 @@ export async function PATCH(
       type:        'user_action',
       title:       `Assigned to ${inc.owner}`,
       description: `Ownership: ${prev} \u2192 ${inc.owner}`,
-      actor:       typeof body.actor === 'string' ? body.actor : undefined,
+      actor,
     })
   }
 
@@ -97,7 +107,7 @@ export async function PATCH(
       type:        'user_action',
       title:       typeof body.noteTitle === 'string' ? body.noteTitle : 'Update',
       description: body.note.trim(),
-      actor:       typeof body.actor === 'string' ? body.actor : undefined,
+      actor,
     })
     inc.updatedAt = nowIso
   }
@@ -115,11 +125,12 @@ export async function PATCH(
       description: typeof body.escalationDesc === 'string'
         ? body.escalationDesc
         : `Escalation level ${prevLevel} ? ${body.escalationLevel}`,
-      actor:       typeof body.actor === 'string' ? body.actor : undefined,
+      actor,
     })
   }
 
   manualStore.set(id, inc)
   persistStore()
+  if (inc.timeline.length > historyLength) appendAuditLog({ ts: nowIso, user: actor, action: 'incident.updated', fields: Object.keys(body).filter(field => field !== 'actor'), detail: id })
   return NextResponse.json(rehydrate(inc))
 }

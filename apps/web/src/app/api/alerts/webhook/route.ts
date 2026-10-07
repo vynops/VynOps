@@ -202,8 +202,12 @@ function buildSlackBlocks(payload: AmPayload): object[] {
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
+  const secret = process.env.ALERTMANAGER_SECRET
+  if (secret && req.headers.get('x-alertmanager-secret') !== secret && req.headers.get('authorization') !== `Bearer ${secret}`) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  let payload: AmPayload
+  try { payload = await req.json() } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }) }
+  if (!payload || !['firing', 'resolved'].includes(payload.status) || !Array.isArray(payload.alerts) || !payload.commonLabels || !payload.groupLabels || payload.alerts.some(alert => !alert?.labels || !alert.annotations || !Number.isFinite(Date.parse(alert.startsAt)))) return NextResponse.json({ error: 'Invalid Alertmanager payload' }, { status: 400 })
   try {
-    const payload: AmPayload = await req.json()
 
     // Ignore Watchdog heartbeat
     if (payload.commonLabels.alertname === 'Watchdog') {
@@ -211,7 +215,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
 
     const cfg      = readConfig()
-    const slackUrl = cfg.slack_webhook_url ?? process.env.SLACK_WEBHOOK_URL ?? ''
+    const slackUrl = cfg.slack_webhook_url || process.env.SLACK_WEBHOOK_URL || ''
     if (!slackUrl.startsWith('https://hooks.slack.com/')) {
       return NextResponse.json({ ok: false, error: 'Slack webhook not configured' }, { status: 503 })
     }
@@ -238,9 +242,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       ok,
     })
 
-    return NextResponse.json({ ok, alerts: payload.alerts.length })
+    return NextResponse.json({ ok, alerts: payload.alerts.length }, { status: ok ? 200 : 502 })
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return NextResponse.json({ ok: false, error: msg }, { status: 400 })
+    appendNotifLog({ ts: new Date().toISOString(), event: payload.status === 'firing' ? 'alert.firing' : 'alert.resolved', channels: [], summary: 'Alert webhook delivery failed', ok: false, status: 'failed' })
+    return NextResponse.json({ ok: false, error: 'Alert delivery failed' }, { status: 502 })
   }
 }

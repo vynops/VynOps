@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { notifyIncident } from '@/lib/notify'
+import { randomUUID } from 'crypto'
+import { assertOperator, assertSession, getSessionUserId } from '@/lib/rbac'
+import { appendAuditLog } from '@/app/api/settings/config/shared'
 import {
   type IncidentDoc,
   SEV_ORDER,
@@ -7,17 +9,20 @@ import {
   manualStore,
   persistStore,
   buildAutoIncidents,
+  dispatchIncidentNotification,
 } from '@/app/api/incidents/shared'
 
 export async function GET() {
+  const deny = await assertSession()
+  if (deny) return deny
   const now = Date.now()
   const { incidents: autoIncidents, totalAlerts, hasPrometheus } = await buildAutoIncidents()
 
   // Merge: manualStore entries override auto-incidents with the same ID (don't duplicate)
   const manualEntries = Array.from(manualStore.values()).map(i => ({
     ...i,
-    slaBreached: now > new Date(i.slaDeadline).getTime(),
-    durationMinutes: Math.round((now - new Date(i.createdAt).getTime()) / 60000),
+    slaBreached: (i.state === 'resolved' && i.resolvedAt ? new Date(i.resolvedAt).getTime() : now) > new Date(i.slaDeadline).getTime(),
+    durationMinutes: Math.round(((i.state === 'resolved' && i.resolvedAt ? new Date(i.resolvedAt).getTime() : now) - new Date(i.createdAt).getTime()) / 60000),
   }))
   const manualIds = new Set(manualEntries.map(i => i.id))
 
@@ -73,12 +78,16 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const deny = await assertOperator()
+  if (deny) return deny
+  const actor = await getSessionUserId() ?? 'authenticated-user'
   let body: any
   try {
     body = await req.json()
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'Invalid incident body' }, { status: 400 })
 
   const title = (body.title ?? '').toString().trim()
   if (!title) return NextResponse.json({ error: 'title is required' }, { status: 400 })
@@ -88,7 +97,7 @@ export async function POST(req: NextRequest) {
     ? (body.severity as string)
     : 'medium'
   const slaMins = getSlaMinutes()[severity]
-  const id = `INC-${Date.now().toString(36).toUpperCase().slice(-7)}`
+  const id = `INC-${randomUUID().toUpperCase()}`
 
   const doc: IncidentDoc = {
     id,
@@ -114,6 +123,7 @@ export async function POST(req: NextRequest) {
         type: 'user_action',
         title: 'Incident declared',
         description: 'Incident declared manually via Incident Command Center',
+        actor,
       },
     ],
     blastRadius: {
@@ -128,20 +138,14 @@ export async function POST(req: NextRequest) {
     source: 'manual',
     durationMinutes: 0,
     escalationLevel: 0,
+    notificationPending: true,
+    notificationEvent: 'incident.created',
   }
 
   manualStore.set(id, doc)
   persistStore()
-
-  const base = (process.env.NEXTAUTH_URL ?? 'http://localhost:3000').replace(/\/$/, '')
-  void notifyIncident({
-    id,
-    title,
-    severity,
-    service: doc.service,
-    state: doc.state,
-    url: `${base}/incidents?id=${id}`,
-  })
+  appendAuditLog({ ts: doc.createdAt, user: actor, action: 'incident.created', detail: id })
+  await dispatchIncidentNotification(doc)
 
   return NextResponse.json(doc, { status: 201 })
 }

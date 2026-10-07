@@ -1,7 +1,8 @@
 import { resolvePromUrl, K8S_TIMEOUT_MS } from '@/lib/cluster'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { join } from 'path'
-import { readConfig } from '@/app/api/settings/config/shared'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs'
+import { join, dirname } from 'path'
+import { readConfig, appendAuditLog } from '@/app/api/settings/config/shared'
+import { notifyIncident } from '@/lib/notify'
 
 // SLA window (minutes) per severity — reads runtime config, falls back to defaults
 export function getSlaMinutes(): Record<string, number> {
@@ -136,6 +137,9 @@ export type IncidentDoc = {
   source: 'auto' | 'manual'
   durationMinutes: number
   escalationLevel: number
+  notificationChannels?: string[]
+  notificationPending?: boolean
+  notificationEvent?: string
 }
 
 const STORE_FILE = join(process.cwd(), 'data', 'incidents-manual.json')
@@ -146,26 +150,124 @@ function loadStore(): Map<string, IncidentDoc> {
     const raw = JSON.parse(readFileSync(STORE_FILE, 'utf8')) as Record<string, IncidentDoc>
     return new Map(Object.entries(raw))
   } catch {
-    return new Map()
+    throw new Error('Unable to read incident history')
+  }
+}
+
+export function writeAtomicJson(file: string, value: unknown): void {
+  mkdirSync(dirname(file), { recursive: true })
+  const temporary = file + '.tmp'
+  writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf8')
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      renameSync(temporary, file)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? ''
+      if (attempt === 4 || !['EPERM', 'EACCES', 'EBUSY'].includes(code)) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1))
+    }
   }
 }
 
 function saveStore(store: Map<string, IncidentDoc>): void {
-  try {
-    const dir = join(process.cwd(), 'data')
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    const obj: Record<string, IncidentDoc> = {}
-    for (const [k, v] of store) obj[k] = v
-    writeFileSync(STORE_FILE, JSON.stringify(obj, null, 2), 'utf8')
-  } catch {
-    // non-fatal
-  }
+  writeAtomicJson(STORE_FILE, Object.fromEntries(store))
 }
 
-export const manualStore: Map<string, IncidentDoc> = loadStore()
+const sharedGlobal = globalThis as typeof globalThis & { vynopsIncidentStore?: Map<string, IncidentDoc> }
+export const manualStore: Map<string, IncidentDoc> = sharedGlobal.vynopsIncidentStore ??= loadStore()
+const lockGlobal = globalThis as typeof globalThis & { vynopsEscalationLocks?: Set<string>; vynopsNotificationLocks?: Set<string> }
+export const escalationLocks = lockGlobal.vynopsEscalationLocks ??= new Set<string>()
+const notificationLocks = lockGlobal.vynopsNotificationLocks ??= new Set<string>()
 
 export function persistStore(): void {
   saveStore(manualStore)
+}
+
+export async function dispatchIncidentNotification(incident: IncidentDoc): Promise<void> {
+  if (notificationLocks.has(incident.id)) return
+  notificationLocks.add(incident.id)
+  try {
+  const event = incident.notificationEvent ?? 'incident.created'
+  const generation = incident.updatedAt
+  const base = (process.env.NEXTAUTH_URL ?? 'http://localhost:3030').replace(/\/$/, '')
+  const result = await notifyIncident({ ...incident, url: `${base}/incidents?id=${encodeURIComponent(incident.id)}` }, event, incident.notificationChannels ?? [])
+  if (incident.notificationEvent !== event || incident.updatedAt !== generation) return
+  incident.notificationChannels = result.channels
+  incident.notificationPending = !result.ok
+  const now = new Date().toISOString()
+  incident.timeline.push({ id: `tl-${incident.id}-${now}-notification`, ts: now, type: 'notification', title: `Notification ${result.status}`, description: `${event}: ${result.channels.join(', ') || 'no channel delivered'}`, actor: 'system', metadata: { status: result.status, channels: result.channels } })
+  persistStore()
+  } finally {
+    notificationLocks.delete(incident.id)
+  }
+}
+
+export function reconcileAutoIncidents(incidents: IncidentDoc[], hasPrometheus: boolean): void {
+  if (!hasPrometheus) return
+  const now = new Date().toISOString()
+  const activeIds = new Set(incidents.map(incident => incident.id))
+  for (const detected of incidents) {
+    const existing = manualStore.get(detected.id)
+    if (!existing) {
+      detected.notificationPending = true
+      detected.notificationEvent = 'incident.created'
+      manualStore.set(detected.id, detected)
+      appendAuditLog({ ts: now, user: 'system', action: 'incident.created', detail: detected.id })
+      continue
+    }
+    if (existing.state === 'resolved' && existing.alertCount === 0) {
+      existing.state = 'investigating'
+      existing.createdAt = detected.createdAt
+      existing.slaDeadline = detected.slaDeadline
+      existing.resolvedAt = undefined
+      existing.escalationLevel = 0
+      existing.notificationChannels = []
+      existing.notificationPending = true
+      existing.notificationEvent = 'incident.reopened'
+      existing.timeline.push({ id: `tl-${existing.id}-${now}-reopen`, ts: now, type: 'alert', title: 'Alerts firing again', description: 'A new alert occurrence reopened this incident', actor: 'system' })
+      appendAuditLog({ ts: now, user: 'system', action: 'incident.reopened', detail: existing.id })
+    }
+    existing.alerts = detected.alerts
+    existing.alertCount = detected.alertCount
+    existing.severity = detected.severity
+    existing.updatedAt = now
+    existing.slaBreached = (existing.resolvedAt ? new Date(existing.resolvedAt).getTime() : Date.now()) > new Date(existing.slaDeadline).getTime()
+  }
+  for (const incident of manualStore.values()) {
+    if (incident.source !== 'auto' || activeIds.has(incident.id) || incident.alertCount === 0) continue
+    incident.alerts = []
+    incident.alertCount = 0
+    incident.updatedAt = now
+    if (incident.state !== 'resolved') {
+      incident.state = 'resolved'
+      incident.resolvedAt = now
+      incident.notificationChannels = []
+      incident.notificationPending = true
+      incident.notificationEvent = 'incident.resolved'
+      incident.timeline.push({ id: `tl-${incident.id}-${now}-recovery`, ts: now, type: 'alert', title: 'Alerts recovered', description: 'A successful Prometheus poll confirmed that the firing alerts cleared', actor: 'system' })
+      appendAuditLog({ ts: now, user: 'system', action: 'incident.resolved', detail: incident.id })
+    }
+  }
+  persistStore()
+}
+
+export function recordSlaBreaches(): void {
+  const now = Date.now()
+  for (const incident of manualStore.values()) {
+    if (incident.state === 'resolved' || now <= new Date(incident.slaDeadline).getTime()) continue
+    incident.slaBreached = true
+    if (incident.timeline.some(event => event.title === 'SLA deadline exceeded')) continue
+    const ts = new Date(now).toISOString()
+    incident.timeline.push({ id: `tl-${incident.id}-${ts}-sla`, ts, type: 'escalation', title: 'SLA deadline exceeded', description: 'The server detected an unresolved incident past its SLA deadline', actor: 'system' })
+    if (!incident.notificationPending) {
+      incident.notificationPending = true
+      incident.notificationChannels = []
+      incident.notificationEvent = 'incident.sla_breached'
+    }
+    appendAuditLog({ ts, user: 'system', action: 'incident.sla_breached', detail: incident.id })
+  }
+  persistStore()
 }
 
 export const SEV_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0, none: 0 }
@@ -197,6 +299,7 @@ function buildIncident(
       title: `${alerts.length} alert${alerts.length > 1 ? 's' : ''} detected`,
       description: `Prometheus detected: ${alerts.map(a => a.name).join(', ')}`,
       severity,
+      actor: 'system',
     },
   ]
 
@@ -336,5 +439,5 @@ export async function buildAutoIncidents(): Promise<{ incidents: IncidentDoc[]; 
     r => r.metric?.alertname !== 'Watchdog' && r.metric?.severity !== 'none'
   ).length
 
-  return { incidents, totalAlerts, hasPrometheus: !!alertsJson }
+  return { incidents, totalAlerts, hasPrometheus: alertsJson?.status === 'success' && Array.isArray(alertsJson?.data?.result) }
 }

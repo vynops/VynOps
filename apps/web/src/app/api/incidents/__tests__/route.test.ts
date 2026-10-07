@@ -11,11 +11,28 @@ vi.mock('next/server', () => ({
 }))
 
 vi.mock('@/lib/notify', () => ({
-  notifyIncident: vi.fn().mockResolvedValue(undefined),
+  notifyIncident: vi.fn().mockResolvedValue({ ok: true, channels: ['slack'], status: 'delivered' }),
 }))
 
-import { POST } from '@/app/api/incidents/route'
+vi.mock('@/lib/rbac', () => ({ assertSession: vi.fn().mockResolvedValue(null), assertOperator: vi.fn().mockResolvedValue(null), getSessionUserId: vi.fn().mockResolvedValue('test-operator') }))
+vi.mock('@/app/api/settings/config/shared', () => ({ appendAuditLog: vi.fn() }))
+
+vi.mock('@/app/api/incidents/shared', () => ({
+  manualStore: new Map(),
+  persistStore: vi.fn(),
+  getSlaMinutes: () => ({ critical: 30, high: 120, medium: 480, low: 2880 }),
+  SEV_ORDER: { critical: 4, high: 3, medium: 2, low: 1 },
+  buildAutoIncidents: vi.fn().mockResolvedValue({ incidents: [], totalAlerts: 0, hasPrometheus: false }),
+  reconcileAutoIncidents: vi.fn(),
+  dispatchIncidentNotification: async (incident: unknown) => {
+    const { notifyIncident } = await import('@/lib/notify')
+    await notifyIncident(incident as any)
+  },
+}))
+
+import { GET, POST } from '@/app/api/incidents/route'
 import { notifyIncident } from '@/lib/notify'
+import { manualStore } from '@/app/api/incidents/shared'
 
 function makeRequest(body: unknown) {
   return new Request('http://localhost/api/incidents', {
@@ -26,7 +43,10 @@ function makeRequest(body: unknown) {
 }
 
 describe('POST /api/incidents', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    manualStore.clear()
+  })
 
   it('returns 400 when title is missing', async () => {
     const res = await POST(makeRequest({ severity: 'critical' }) as any)
@@ -85,5 +105,18 @@ describe('POST /api/incidents', () => {
   it('does NOT call notifyIncident when title validation fails', async () => {
     await POST(makeRequest({}) as any)
     expect(notifyIncident).not.toHaveBeenCalled()
+  })
+
+  it('does not turn a timely resolution into an SLA breach as time passes', async () => {
+    const response = await POST(makeRequest({ title: 'Resolved test', severity: 'critical' }) as any)
+    const created = await response.json()
+    const incident = manualStore.get(created.id)!
+    incident.createdAt = new Date(Date.now() - 120 * 60000).toISOString()
+    incident.slaDeadline = new Date(Date.now() - 90 * 60000).toISOString()
+    incident.resolvedAt = new Date(Date.now() - 100 * 60000).toISOString()
+    incident.state = 'resolved'
+    const result = await (await GET()).json()
+    expect(result.incidents[0].slaBreached).toBe(false)
+    expect(result.metrics.slaCompliancePct).toBe(100)
   })
 })

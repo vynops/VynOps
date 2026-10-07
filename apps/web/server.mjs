@@ -28,7 +28,8 @@ if (!process.env.CRON_SECRET) {
 }
 const CRON_SECRET = process.env.CRON_SECRET
 
-const dev = process.env.NODE_ENV !== 'production'
+const dev = process.argv.includes('--dev') || process.env.NODE_ENV === 'development'
+if (!process.env.NODE_ENV) process.env.NODE_ENV = dev ? 'development' : 'production'
 const hostname = process.env.HOST || '0.0.0.0'
 const port = parseInt(process.env.PORT || '3030', 10)
 
@@ -110,6 +111,28 @@ app.prepare().then(() => {
     // because the loop's per-workload cooldown prevents duplicate actions.
     const LOOP_MS  = 5 * 60 * 1000
     const loopBase = `http://localhost:${port}`
+
+    let incidentRunning = false
+    const runIncidentLoop = async () => {
+      if (incidentRunning) return
+      incidentRunning = true
+      try {
+        const response = await fetch(`${loopBase}/api/incidents/worker`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${CRON_SECRET}` },
+          signal: AbortSignal.timeout(240_000),
+        })
+        const result = await response.json()
+        console.log(`[cron] incident cycle status=${response.status} healthy=${result.ok === true} pending=${result.pending ?? 'unknown'}`)
+      } catch {
+        console.error('[cron] incident cycle failed')
+      } finally {
+        incidentRunning = false
+      }
+    }
+
+    setTimeout(runIncidentLoop, 10_000)
+    setInterval(runIncidentLoop, 60_000)
 
     const runAutonomousLoop = () => {
       fetch(`${loopBase}/api/autonomous/loop`, {
