@@ -1,10 +1,11 @@
 import { auth } from '@/lib/auth'
+import { hasInternalSecret, isInternalPath } from '@/lib/internal'
 
 export default auth((req) => {
   const isLoggedIn = !!req.auth
   const { pathname } = req.nextUrl
 
-  if (['/api/incidents/worker', '/api/autonomous/loop'].includes(pathname) && process.env.CRON_SECRET && req.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`) return
+  if (isInternalPath(pathname) && hasInternalSecret(req.headers)) return
 
   // Return 401 JSON for unauthenticated API calls (skip /api/auth which handles sign-in)
   if (!isLoggedIn && pathname.startsWith('/api/')) {

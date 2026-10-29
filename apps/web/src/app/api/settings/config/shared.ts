@@ -45,6 +45,8 @@ export interface RuntimeConfig {
   auto_plan_enabled?: boolean
   auto_execute_plans?: boolean
   auto_execute_threshold?: number
+  /** Highest action risk a plan may contain and still auto-execute; default 'low'. */
+  auto_execute_max_risk?: 'low' | 'medium' | 'high'
 }
 
 export function readConfig(): RuntimeConfig {
@@ -62,10 +64,22 @@ export function writeConfig(cfg: RuntimeConfig): void {
   fs.renameSync(tmp, CONFIG_PATH)
 }
 
+// Rotated copies (.1, .2) stay on disk; the history pages read only the live file.
+const MAX_LOG_BYTES = 5 * 1024 * 1024
+function appendRotating(file: string, line: string) {
+  try {
+    if (fs.existsSync(file) && fs.statSync(file).size > MAX_LOG_BYTES) {
+      if (fs.existsSync(`${file}.1`)) fs.renameSync(`${file}.1`, `${file}.2`)
+      fs.renameSync(file, `${file}.1`)
+    }
+  } catch { /* rotation must never block logging */ }
+  fs.appendFileSync(file, line)
+}
+
 export function appendAuditLog(entry: { ts: string; user: string; action: string; fields?: string[]; detail?: string }) {
-  fs.appendFileSync(AUDIT_PATH, JSON.stringify(entry) + '\n')
+  appendRotating(AUDIT_PATH, JSON.stringify(entry) + '\n')
 }
 
 export function appendNotifLog(entry: { ts: string; event: string; channels: string[]; summary: string; ok: boolean; incidentId?: string; status?: string; attempts?: { channel: string; attempt: number; ok: boolean; status?: number }[] }) {
-  fs.appendFileSync(NOTIF_LOG_PATH, JSON.stringify(entry) + '\n')
+  appendRotating(NOTIF_LOG_PATH, JSON.stringify(entry) + '\n')
 }

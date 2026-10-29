@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "postinstall": "node apps/web/scripts/setup-env.mjs",
     "dev": "turbo dev",
     "build": "turbo build",
     "lint": "turbo lint",
@@ -25,4 +26,3 @@
     "bcryptjs": "^3.0.3"
   }
 }
-

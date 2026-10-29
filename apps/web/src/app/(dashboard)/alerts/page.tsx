@@ -195,7 +195,7 @@ function AlertsPage() {
             !a.job.toLowerCase().includes(q)) return false
       }
       return true
-    })
+    }).sort((a, b) => new Date(b.startsAt).getTime() - new Date(a.startsAt).getTime())
   }, [data.alerts, sevFilter, search])
 
   return (

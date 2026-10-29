@@ -1,0 +1,88 @@
+{
+  "alert_email": "",
+  "notify_on": {
+    "critical_incidents": true
+  },
+  "groq_model": "llama-3.3-70b-versatile",
+  "last_tested": {
+    "slack": {
+      "ts": "2026-07-13T10:09:50.125Z",
+      "ok": true,
+      "msg": "Connected · 287ms"
+    },
+    "alertmanager": {
+      "ts": "2026-08-05T08:40:23.846Z",
+      "ok": true,
+      "msg": "v0.32.1 · 74ms"
+    },
+    "email": {
+      "ts": "2026-07-13T08:07:48.691Z",
+      "ok": true,
+      "msg": "TCP probe OK · smtp.gmail.com:587"
+    },
+    "teams": {
+      "ts": "2026-10-24T10:49:35.402Z",
+      "ok": true,
+      "msg": "Connected · 2106ms"
+    }
+  },
+  "alert_routing": {
+    "critical": [
+      "pagerduty",
+      "slack"
+    ],
+    "warning": [
+      "slack"
+    ],
+    "info": [
+      "slack"
+    ]
+  },
+  "notify_cooldown_minutes": 30,
+  "integrations_enabled": {
+    "prometheus": true,
+    "grafana": false,
+    "alertmanager": false,
+    "datadog": false,
+    "falco": true,
+    "argocd": false,
+    "github": false,
+    "pagerduty": false,
+    "slack": true,
+    "opsgenie": false
+  },
+  "smtp_port": 587,
+  "autonomous_enabled": true,
+  "autonomous_dry_run": true,
+  "autonomous_confidence_threshold": 80,
+  "autonomous_allowed_actions": [
+    "restart_deployment"
+  ],
+  "finops_cpu_per_core_hr": 0.048,
+  "finops_mem_per_gib_hr": 0.006,
+  "finops_storage_per_gib_mo": 0.05,
+  "sla_minutes_critical": 30,
+  "sla_minutes_high": 120,
+  "sla_minutes_medium": 480,
+  "sla_minutes_low": 2880,
+  "auto_escalate_enabled": true,
+  "auto_runbook_enabled": false,
+  "auto_runbook_allowed": {},
+  "auto_plan_enabled": true,
+  "auto_execute_plans": false,
+  "auto_execute_threshold": 85,
+  "slack_webhook_url": "https://hooks.slack.com/services/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",
+  "alertmanager_url": "http://127.0.0.1:8001/api/v1/namespaces/monitoring/services/monitoring-kube-prometheus-alertmanager:9093/proxy",
+  "alert_webhook_url": "",
+  "smtp_host": "smtp.gmail.com",
+  "smtp_user": "",
+  "smtp_from": "",
+  "smtp_pass": "",
+  "groq_api_key": "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",
+  "ai_provider": "groq",
+  "ai_api_key": "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",
+  "ai_model": "openai/gpt-oss-120b",
+  "ai_base_url": "",
+  "teams_webhook_url": "https://default7fa7d4ffbf19464b89a6a132b269d6.8c.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/06/workflows/343dc410482745419e77812c2c942356/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=QQ4iRUczP5HgdJj8wnvNuSlHu4ajnBCsWXtagXqjC6E",
+  "auto_execute_max_risk": "low"
+}

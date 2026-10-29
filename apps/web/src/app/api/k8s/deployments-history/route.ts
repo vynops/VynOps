@@ -52,8 +52,7 @@ function extractCommitSha(rs: any): string {
   const img = rs.spec?.template?.spec?.containers?.[0]?.image ?? ''
   const digest = img.match(/@sha256:([0-9a-f]{12})/)
   if (digest) return digest[1].slice(0, 8)
-  // Fall back to RS UID
-  return (rs.metadata?.uid ?? 'unknown').slice(0, 8)
+  return ''  // no real commit info: never present an internal ID as a SHA
 }
 
 function extractBranch(rs: any): string {
@@ -70,13 +69,12 @@ function extractBranch(rs: any): string {
   return '—'
 }
 
-function detectEnvironment(ns: string, labels: Record<string, string>): 'production' | 'staging' | 'development' {
+function detectEnvironment(ns: string, labels: Record<string, string>): 'production' | 'staging' | 'development' | 'unknown' {
   const env = labels['app.kubernetes.io/environment'] ?? labels['environment'] ?? ''
   if (/prod/i.test(env) || /prod/i.test(ns)) return 'production'
   if (/stag/i.test(env) || /stag/i.test(ns)) return 'staging'
   if (/dev/i.test(env)  || /dev/i.test(ns))  return 'development'
-  // System namespaces = treat as production-equivalent
-  return 'production'
+  return 'unknown'  // do not guess: without a label or a telling name the environment is not known
 }
 
 function imageToVersion(image: string): string {
@@ -210,12 +208,13 @@ export async function GET() {
       const ready   = rs.status?.readyReplicas ?? 0
       const created = rs.metadata.creationTimestamp ?? new Date().toISOString()
 
-      // Skip old scaled-down revisions (desired=0 and not the latest)
-      if (i > 0 && (rs.spec?.replicas ?? 0) === 0) continue
+      // Older revisions stay in the history: each one was a real rollout.
 
       // Status — B3: give new deploys a 5-min grace before marking failed
       let status: 'success' | 'in-progress' | 'failed' | 'rolled-back' = 'success'
-      if (i === 0) {
+      // A deployment deliberately scaled to 0 is not a failed rollout.
+      const scaledToZero = i === 0 && desired === 0
+      if (i === 0 && !scaledToZero) {
         const ageMs = Date.now() - new Date(created).getTime()
         if (desired > 0 && ready === desired) status = 'success'
         else if (ready > 0 || ageMs < 300_000) status = 'in-progress'
@@ -278,7 +277,7 @@ export async function GET() {
         status, isFirstRevision: rev === 1,
         changesCount: changes.length,
         startedAt: created,
-        replicas: desired,
+        replicas: desired > 0 ? desired : (deploy.spec?.replicas ?? 1),
         namespace: ns,
       })
 
@@ -301,6 +300,7 @@ export async function GET() {
         changes,
         riskScore,
         replicas: { desired, ready },
+        scaledToZero,
         commitSha,
         branch,
         imageTag:  imageToVersion(image),
@@ -317,15 +317,17 @@ export async function GET() {
   const now30d = Date.now() - 30 * 86_400_000
   const e7d    = events.filter(e => new Date(e.startedAt).getTime() > now7d)
   const e30d   = events.filter(e => new Date(e.startedAt).getTime() > now30d)
+  // Rates ignore deployments that are deliberately scaled to 0; they neither succeeded nor failed.
+  const rated30d = e30d.filter(e => !e.scaledToZero)
 
   const dora = {
     deployFrequency7d:  Math.round(e7d.length  / 7  * 100) / 100,   // deploys/day
     deployFrequency30d: Math.round(e30d.length / 30 * 100) / 100,
     // B7: CFR and successRate scoped to 30-day window (same as DORA spec)
-    changeFailureRate:  e30d.length > 0
-      ? Math.round(e30d.filter(e => e.status === 'failed').length / e30d.length * 100) : 0,
-    successRate: e30d.length > 0
-      ? Math.round(e30d.filter(e => e.status === 'success').length / e30d.length * 100) : 0,
+    changeFailureRate:  rated30d.length > 0
+      ? Math.round(rated30d.filter(e => e.status === 'failed').length / rated30d.length * 100) : 0,
+    successRate: rated30d.length > 0
+      ? Math.round(rated30d.filter(e => e.status === 'success').length / rated30d.length * 100) : 0,
     totalDeploys:   events.length,
     serviceCount:   new Set(events.map(e => e.service)).size,
     inProgress:     events.filter(e => e.status === 'in-progress').length,
@@ -334,10 +336,10 @@ export async function GET() {
                  : e7d.length >= 1 ? 'high'           // 1-6/week
                  : e30d.length >= 1 ? 'medium'        // 1-4/month
                  : 'low',                             // <1/month
-    cfrBand: e30d.length === 0 ? 'elite'
-           : e30d.filter(e => e.status === 'failed').length / e30d.length < 0.05 ? 'elite'
-           : e30d.filter(e => e.status === 'failed').length / e30d.length < 0.15 ? 'high'
-           : e30d.filter(e => e.status === 'failed').length / e30d.length < 0.30 ? 'medium'
+    cfrBand: rated30d.length === 0 ? 'elite'
+           : rated30d.filter(e => e.status === 'failed').length / rated30d.length < 0.05 ? 'elite'
+           : rated30d.filter(e => e.status === 'failed').length / rated30d.length < 0.15 ? 'high'
+           : rated30d.filter(e => e.status === 'failed').length / rated30d.length < 0.30 ? 'medium'
            : 'low',
   }
 

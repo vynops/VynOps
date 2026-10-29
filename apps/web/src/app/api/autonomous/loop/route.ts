@@ -11,9 +11,9 @@ import {
   getEffectiveThreshold,
 } from '@/lib/autonomousLearning'
 import { resolveK8sUrl , K8S_TIMEOUT_MS } from '@/lib/cluster'
+import { hasInternalSecret, internalFetch } from '@/lib/internal'
 
 const SLACK = (process.env.SLACK_WEBHOOK_URL ?? '')
-const BASE  = (process.env.NEXTAUTH_URL      ?? 'http://localhost:3000').replace(/\/$/, '')
 
 const DATA_DIR = join(process.cwd(), 'data')
 const LOG_FILE = join(DATA_DIR, 'autonomous.log.jsonl')
@@ -24,7 +24,14 @@ const VERIFY_BEFORE_MS =  2 * 60 * 60 * 1000
 
 // In-memory cooldown ? hydrated from log on startup/every 5 min (restart-safe)
 const actionCooldown     = new Map<string, number>()
+const dryRunSeen         = new Map<string, number>()
 let   cooldownHydratedAt = 0
+let   loopRunning         = false
+
+type WorkloadKind = 'Deployment' | 'StatefulSet' | 'DaemonSet'
+const WORKLOAD_PATH: Record<WorkloadKind, string> = { Deployment: 'deployments', StatefulSet: 'statefulsets', DaemonSet: 'daemonsets' }
+const workloadPath = (kind: WorkloadKind, name: string, namespace: string) =>
+  `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/${WORKLOAD_PATH[kind]}/${encodeURIComponent(name)}`
 
 interface AutonomousAction {
   id:          string
@@ -39,6 +46,7 @@ interface AutonomousAction {
   result:      'ok' | 'failed' | 'dry_run' | 'skipped_cooldown' | 'unresolvable'
   error?:      string
   patternKey?: string
+  workloadKind?: WorkloadKind
 }
 
 function generateId(): string {
@@ -96,26 +104,28 @@ async function k8sPatch(path: string, body: unknown) {
 }
 
 // Walk pod ? ReplicaSet ? Deployment to resolve the owning deployment name
-async function resolveDeployment(podName: string, namespace: string): Promise<string | null> {
+async function resolveWorkload(podName: string, namespace: string): Promise<{ kind: WorkloadKind; name: string } | null> {
   try {
     const pod = await k8sGet(`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}`)
-    if (pod) {
-      const rs = pod.metadata?.ownerReferences?.find((o: any) => o.kind === 'ReplicaSet')
-      if (rs) {
-        const rsData = await k8sGet(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/replicasets/${encodeURIComponent(rs.name)}`)
-        const dep = rsData?.metadata?.ownerReferences?.find((o: any) => o.kind === 'Deployment')
-        if (dep?.name) return dep.name
-      }
+    const owners: any[] = pod?.metadata?.ownerReferences ?? []
+    const direct = owners.find(o => o.kind === 'StatefulSet' || o.kind === 'DaemonSet')
+    if (direct?.name) return { kind: direct.kind as WorkloadKind, name: direct.name }
+    const rs = owners.find(o => o.kind === 'ReplicaSet')
+    if (rs) {
+      const rsData = await k8sGet(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/replicasets/${encodeURIComponent(rs.name)}`)
+      const dep = rsData?.metadata?.ownerReferences?.find((o: any) => o.kind === 'Deployment')
+      if (dep?.name) return { kind: 'Deployment', name: dep.name }
     }
   } catch { /* fall through */ }
-  // rawName may already be a deployment name ? verify
-  const dep = await k8sGet(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(podName)}`)
-  return dep ? podName : null
+  for (const kind of ['Deployment', 'StatefulSet', 'DaemonSet'] as const) {
+    if (await k8sGet(workloadPath(kind, podName, namespace))) return { kind, name: podName }
+  }
+  return null
 }
 
-async function restartDeployment(name: string, namespace: string) {
+async function restartWorkload(kind: WorkloadKind, name: string, namespace: string) {
   await k8sPatch(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(name)}`,
+    workloadPath(kind, name, namespace),
     { spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } } } } },
   )
 }
@@ -155,11 +165,9 @@ async function deletePod(deploymentName: string, namespace: string): Promise<str
   return podName
 }
 
-async function scaleDeployment(name: string, namespace: string, replicas: number) {
-  await k8sPatch(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(name)}/scale`,
-    { spec: { replicas } },
-  )
+async function scaleWorkload(kind: WorkloadKind, name: string, namespace: string, replicas: number) {
+  if (kind === 'DaemonSet') throw new Error('DaemonSets cannot be scaled')
+  await k8sPatch(`${workloadPath(kind, name, namespace)}/scale`, { spec: { replicas } })
 }
 
 /** Parse a target replica count from an insight's suggestedAction or evidence. */
@@ -185,17 +193,15 @@ async function slackNotify(text: string) {
 
 // ?? Outcome verification ???????????????????????????????????????????????????????
 
-async function checkDeploymentHealth(
-  name: string, namespace: string,
+async function checkWorkloadHealth(
+  name: string, namespace: string, kind: WorkloadKind = 'Deployment',
 ): Promise<'resolved' | 'persisted' | 'unknown'> {
-  const dep = await k8sGet(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(name)}`,
-  )
+  const dep = await k8sGet(workloadPath(kind, name, namespace))
   if (!dep) return 'unknown'
 
-  const desired = dep.spec?.replicas ?? 1
-  const avail   = dep.status?.availableReplicas ?? 0
-  const ready   = dep.status?.readyReplicas ?? 0
+  const ready   = dep.status?.[kind === 'DaemonSet' ? 'numberReady' : 'readyReplicas'] ?? 0
+  const desired = kind === 'DaemonSet' ? (dep.status?.desiredNumberScheduled ?? 1) : (dep.spec?.replicas ?? 1)
+  const avail   = (kind === 'DaemonSet' ? dep.status?.numberAvailable : dep.status?.availableReplicas) ?? ready
 
   if (avail < Math.ceil(desired * 0.8) || ready < 1) return 'persisted'
 
@@ -241,7 +247,7 @@ async function runPendingVerifications(): Promise<{ count: number; resolved: num
   for (const a of pending) {
     let outcome: 'resolved' | 'persisted' | 'unknown' = 'unknown'
     if (a.action === 'restart_deployment' || a.action === 'scale_deployment') {
-      outcome = await checkDeploymentHealth(a.target, a.namespace)
+      outcome = await checkWorkloadHealth(a.target, a.namespace, a.workloadKind ?? 'Deployment')
     }
     appendOutcome({ actionId: a.id, ts: new Date().toISOString(), outcome, detail: `${a.namespace}/${a.target}` })
     if (outcome === 'resolved')  resolved++
@@ -253,11 +259,21 @@ async function runPendingVerifications(): Promise<{ count: number; resolved: num
 
 // ?? POST handler ???????????????????????????????????????????????????????????????
 
-export async function POST(req: Request) {
-  // Allow server-side cron calls authenticated via CRON_SECRET header
-  const authHeader = req.headers.get('authorization') ?? ''
-  const cronSecret = process.env.CRON_SECRET
-  const isCronCall = !!(cronSecret && authHeader === `Bearer ${cronSecret}`)
+async function callInternal(path: string, timeoutMs: number): Promise<any> {
+  try {
+    const r = await internalFetch(path, { method: 'POST', timeoutMs })
+    if (r.ok) return await r.json()
+    console.error(`[autonomous] ${path} returned HTTP ${r.status}`)
+    return { ok: false, error: `HTTP ${r.status}` }
+  } catch (e: any) {
+    console.error(`[autonomous] ${path} failed: ${e.message}`)
+    return { ok: false, error: e.message }
+  }
+}
+
+async function runLoop(req: Request) {
+  // Allow server-side cron calls authenticated via CRON_SECRET
+  const isCronCall = hasInternalSecret(req.headers)
 
   if (!isCronCall) {
     const deny = await assertOperator()
@@ -267,37 +283,13 @@ export async function POST(req: Request) {
   const cfg = readConfig()
 
   // Auto-escalation: runs every cycle, independent of the healing toggle
-  let autoEscResult: any = null
-  try {
-    const aer = await fetch(`${BASE}/api/incidents/auto-escalate`, {
-      method: 'POST',
-      headers: { 'x-internal-secret': cronSecret ?? '' },
-      signal: AbortSignal.timeout(15000),
-    })
-    if (aer.ok) autoEscResult = await aer.json()
-  } catch { /* non-critical */ }
+  const autoEscResult = await callInternal('/api/incidents/auto-escalate', 15000)
 
   // Auto-runbook trigger: runs every cycle, independent of the healing toggle
-  let autoRunbookResult: any = null
-  try {
-    const arr = await fetch(`${BASE}/api/automation/auto-trigger`, {
-      method: 'POST',
-      headers: { 'x-internal-secret': cronSecret ?? '' },
-      signal: AbortSignal.timeout(30000),
-    })
-    if (arr.ok) autoRunbookResult = await arr.json()
-  } catch { /* non-critical */ }
+  const autoRunbookResult = await callInternal('/api/automation/auto-trigger', 30000)
 
   // L5: AI remediation plan generation
-  let autoPlanResult: any = null
-  try {
-    const apr = await fetch(`${BASE}/api/autonomous/plan`, {
-      method: 'POST',
-      headers: { 'x-internal-secret': cronSecret ?? '' },
-      signal: AbortSignal.timeout(30000),
-    })
-    if (apr.ok) autoPlanResult = await apr.json()
-  } catch { /* non-critical */ }
+  const autoPlanResult = await callInternal('/api/autonomous/plan', 30000)
 
   const enabled        = !!(cfg as any).autonomous_enabled
   const dryRun         = (cfg as any).autonomous_dry_run !== false
@@ -322,12 +314,11 @@ export async function POST(req: Request) {
   // 3. Fetch live AI insights
   let insights: any[] = []
   try {
-    const r = await fetch(`${BASE}/api/ai/insights`, {
-      signal: AbortSignal.timeout(20000),
-      cache:  'no-store',
-    })
-    if (r.ok) insights = (await r.json()).insights ?? []
+    const r = await internalFetch('/api/ai/insights', { method: 'GET', timeoutMs: 20000 })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    insights = (await r.json()).insights ?? []
   } catch (e: any) {
+    console.error(`[autonomous] insights unavailable: ${e.message}`)
     return NextResponse.json({ ok: false, error: `Insights unavailable: ${e.message}` }, { status: 500 })
   }
 
@@ -383,6 +374,9 @@ export async function POST(req: Request) {
       continue
     }
 
+    // Dry-run entries are throttled per workload too, so the log stays reviewable
+    if (dryRun && Date.now() - (dryRunSeen.get(cooldownKey) ?? 0) < COOLDOWN_MS) continue
+
     const entry: AutonomousAction = {
       id: generateId(), ts: new Date().toISOString(),
       insightId: ins.id, insight: ins.title, action,
@@ -391,29 +385,35 @@ export async function POST(req: Request) {
     }
 
     if (dryRun) {
+      dryRunSeen.set(cooldownKey, Date.now())
+      const wl = await resolveWorkload(rawName, namespace)
+      if (wl) { entry.target = wl.name; entry.workloadKind = wl.kind }
+      else entry.error = `Would be unresolvable: no workload found for "${rawName}" in "${namespace}"`
       appendLog(entry)
       actions.push(entry)
       continue
     }
 
-    // ?? Live execution ????????????????????????????????????????????????????
+    // Live execution
     try {
-      const deployName = await resolveDeployment(rawName, namespace)
-      if (!deployName) {
+      const wl = await resolveWorkload(rawName, namespace)
+      if (!wl) {
         entry.result = 'unresolvable'
-        entry.error  = `Could not resolve deployment for "${rawName}" in namespace "${namespace}"`
+        entry.error  = `Could not resolve workload for "${rawName}" in namespace "${namespace}"`
       } else {
+        const deployName = wl.name
         entry.target = deployName
+        entry.workloadKind = wl.kind
         if (action === 'restart_deployment') {
-          await restartDeployment(deployName, namespace)
+          await restartWorkload(wl.kind, deployName, namespace)
         } else if (action === 'delete_pod') {
           const deletedPod = await deletePod(deployName, namespace)
           entry.insight = `${entry.insight} (deleted pod: ${deletedPod})`
         } else if (action === 'scale_deployment') {
-          const dep = await k8sGet(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(deployName)}`)
+          const dep = await k8sGet(workloadPath(wl.kind, deployName, namespace))
           const currentReplicas: number = dep?.spec?.replicas ?? 1
           const targetReplicas = parseTargetReplicas(ins, currentReplicas)
-          await scaleDeployment(deployName, namespace, targetReplicas)
+          await scaleWorkload(wl.kind, deployName, namespace, targetReplicas)
           ;(entry as any).targetReplicas = targetReplicas
           entry.insight = `${entry.insight} (${currentReplicas}?${targetReplicas} replicas)`
         }
@@ -461,4 +461,15 @@ export async function POST(req: Request) {
     actions,
     ranAt: new Date().toISOString(),
   })
+}
+
+// Browser hook and server cron can fire together; overlapping cycles would double-act.
+export async function POST(req: Request) {
+  if (loopRunning) return NextResponse.json({ ok: true, skipped: true, reason: 'Loop already running' })
+  loopRunning = true
+  try {
+    return await runLoop(req)
+  } finally {
+    loopRunning = false
+  }
 }

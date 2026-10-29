@@ -875,10 +875,10 @@ export interface DeploymentEvent {
   version: string
   previousVersion: string
   previousRsName?: string | null
-  environment: 'production' | 'staging' | 'development'
+  environment: 'production' | 'staging' | 'development' | 'unknown'
   namespace: string
   cluster: string
-  deployer: string
+  deployer: string  // tool that manages the deployment (helm, kubectl, ...), not a person
   method: DeployMethod
   status: DeployStatus
   startedAt: string
@@ -890,6 +890,7 @@ export interface DeploymentEvent {
   riskScore: number            // 0-100, AI-predicted pre-deploy risk
   rollbackOf?: string          // id of the deploy being reverted
   replicas: { desired: number; ready: number }
+  scaledToZero?: boolean       // deliberately scaled to 0 replicas; not a failure
   commitSha: string
   branch: string
 }
@@ -917,4 +918,3 @@ export interface Trace {
   startedAt: string
   spans: TraceSpan[]
 }
-

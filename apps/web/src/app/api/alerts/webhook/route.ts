@@ -17,6 +17,7 @@
  */
 import { NextResponse } from 'next/server'
 import { readConfig, appendNotifLog } from '@/app/api/settings/config/shared'
+import { teamsPayload } from '@/lib/notify'
 import fs from 'fs'
 import path from 'path'
 
@@ -216,33 +217,48 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     const cfg      = readConfig()
     const slackUrl = cfg.slack_webhook_url || process.env.SLACK_WEBHOOK_URL || ''
-    if (!slackUrl.startsWith('https://hooks.slack.com/')) {
-      return NextResponse.json({ ok: false, error: 'Slack webhook not configured' }, { status: 503 })
-    }
-
-    const blocks = buildSlackBlocks(payload)
+    const teamsUrl = cfg.teams_webhook_url || process.env.TEAMS_WEBHOOK_URL || ''
     const isFiring = payload.status === 'firing'
-
-    const r = await fetch(slackUrl, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ blocks }),
-      signal:  AbortSignal.timeout(5000),
-    })
-
-    const ok = r.ok
     const alertName = payload.commonLabels.alertname ?? 'unknown'
     const sev       = payload.commonLabels.severity  ?? 'unknown'
+
+    const routing = cfg.alert_routing?.[sev] ?? (sev === 'medium' ? cfg.alert_routing?.warning : undefined)
+    const enabled = (channel: string) => cfg.integrations_enabled?.[channel] !== false && (!routing || routing.includes(channel))
+
+    const targets: { channel: string; url: string; body: unknown }[] = []
+    if (enabled('slack') && slackUrl.startsWith('https://hooks.slack.com/')) {
+      targets.push({ channel: 'slack', url: slackUrl, body: { blocks: buildSlackBlocks(payload) } })
+    }
+    if (enabled('teams') && teamsUrl.startsWith('https://')) {
+      const firing = payload.alerts.filter(a => a.status === 'firing')
+      const shown  = (firing.length > 0 ? firing : payload.alerts).slice(0, 5)
+      const detail = shown.map(a => `${a.labels.alertname ?? alertName}: ${a.annotations.summary ?? a.annotations.description ?? ''}`).join('\n')
+      const title  = isFiring ? `[${sev.toUpperCase()}] ${alertName}` : `[RESOLVED] ${alertName}`
+      targets.push({ channel: 'teams', url: teamsUrl, body: teamsPayload(title, detail, `${VYNOPS_URL}/alerts?name=${encodeURIComponent(alertName)}`) })
+    }
+    if (targets.length === 0) {
+      return NextResponse.json({ ok: false, error: 'No alert channel configured' }, { status: 503 })
+    }
+
+    const delivered: string[] = []
+    await Promise.all(targets.map(async t => {
+      try {
+        const r = await fetch(t.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(t.body), signal: AbortSignal.timeout(5000) })
+        if (r.ok) delivered.push(t.channel)
+      } catch { /* reported via ok=false below */ }
+    }))
+
+    const ok = delivered.length === targets.length
 
     appendNotifLog({
       ts:       new Date().toISOString(),
       event:    isFiring ? 'alert.firing' : 'alert.resolved',
-      channels: ok ? ['slack'] : [],
+      channels: delivered,
       summary:  `[${sev}] ${alertName} (${payload.alerts.length} alert(s)) — ${payload.status}`,
       ok,
     })
 
-    return NextResponse.json({ ok, alerts: payload.alerts.length }, { status: ok ? 200 : 502 })
+    return NextResponse.json({ ok, channels: delivered, alerts: payload.alerts.length }, { status: ok ? 200 : 502 })
   } catch (err: unknown) {
     appendNotifLog({ ts: new Date().toISOString(), event: payload.status === 'firing' ? 'alert.firing' : 'alert.resolved', channels: [], summary: 'Alert webhook delivery failed', ok: false, status: 'failed' })
     return NextResponse.json({ ok: false, error: 'Alert delivery failed' }, { status: 502 })

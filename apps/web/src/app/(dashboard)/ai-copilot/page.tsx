@@ -907,11 +907,12 @@ export default function AICopilotPage() {
 
   const { data: usageData } = useLiveData<any>(
     '/api/ai/usage?limit=1',
-    { totals: { today: { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0 } } },
+    { totals: { today: { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, rateLimitErrors: 0, bySource: {} } } },
     undefined,
     30_000,
   )
-  const usageToday = usageData?.totals?.today ?? { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0 }
+  const usageToday = usageData?.totals?.today ?? { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, rateLimitErrors: 0, bySource: {} }
+  const usageBySource = usageToday.bySource ?? {}
 
   const { messages, input, handleInputChange, handleSubmit, isLoading, error, append, setMessages, setInput, stop } =
     useChat({ api: '/api/ai/chat', initialMessages: INITIAL_MESSAGES })
@@ -1068,9 +1069,9 @@ export default function AICopilotPage() {
             </Link>
           </div>
         )}
-        {/* Token usage today */}
+        {/* AI usage today */}
         <div className="px-3 py-2.5 border-t border-surface-800 space-y-1.5">
-          <p className="text-2xs font-semibold text-surface-600 uppercase tracking-wider">Tokens today</p>
+          <p className="text-2xs font-semibold text-surface-600 uppercase tracking-wider">AI usage today</p>
           <div className="grid grid-cols-2 gap-1">
             <div className="flex flex-col gap-0.5 px-2 py-1.5 rounded-lg bg-surface-900 border border-surface-800">
               <span className="text-2xs text-surface-500">Requests</span>
@@ -1088,6 +1089,27 @@ export default function AICopilotPage() {
               <span className="text-2xs text-surface-500">Out</span>
               <span className="text-xs font-bold text-success">{usageToday.completionTokens >= 1000 ? `${(usageToday.completionTokens / 1000).toFixed(1)}k` : usageToday.completionTokens}</span>
             </div>
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            {[
+              { label: 'Copilot', stats: usageBySource.copilot },
+              { label: 'Auto plan', stats: usageBySource.autonomousPlan },
+            ].map(({ label, stats }) => (
+              <div key={label} className="min-w-0 px-2 py-1.5 rounded-lg bg-surface-900 border border-surface-800">
+                <p className="text-2xs text-surface-500 truncate">{label}</p>
+                <p className="text-xs font-bold text-white">{(stats?.totalTokens ?? 0).toLocaleString()} tokens</p>
+                <p className="text-2xs text-surface-600">{(stats?.requests ?? 0).toLocaleString()} model calls</p>
+                <p className={cn('text-2xs', stats?.failedRequests ? 'text-warning' : 'text-surface-600')}>
+                  {(stats?.failedRequests ?? 0).toLocaleString()} failed
+                </p>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between px-1 pt-0.5 text-2xs">
+            <span className="text-surface-500">Rate-limit failures</span>
+            <span className={cn('font-semibold tabular-nums', usageToday.rateLimitErrors ? 'text-warning' : 'text-surface-400')}>
+              {(usageToday.rateLimitErrors ?? 0).toLocaleString()}
+            </span>
           </div>
         </div>
       </div>

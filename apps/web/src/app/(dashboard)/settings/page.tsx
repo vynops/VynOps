@@ -2194,7 +2194,7 @@ function AboutTab() {
         </div>
         <div className="grid grid-cols-2 gap-3">
           {[
-            { label: 'Version',     value: '1.8.26' },
+            { label: 'Version',     value: '26.10.25' },
             { label: 'Framework',   value: 'Next.js 15 App Router' },
             { label: 'Runtime',     value: 'Node.js 20' },
             { label: 'License',     value: 'Private' },

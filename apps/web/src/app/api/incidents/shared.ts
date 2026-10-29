@@ -39,7 +39,7 @@ const COMPONENT_GROUPS: { key: string; title: string; service: string; match: Re
     key: 'k8s-pods',
     title: 'Kubernetes Workload Issues',
     service: 'cluster-wide',
-    match: /KubePod|CrashLoop|OOMKill|KubeContainer|KubeDeployment/,
+    match: /KubePod|CrashLoop|OOMKill|KubeContainer|KubeDeployment|VynOpsWorkload|VynOpsPod/,
   },
   {
     key: 'k8s-storage',
@@ -138,16 +138,50 @@ export type IncidentDoc = {
   durationMinutes: number
   escalationLevel: number
   notificationChannels?: string[]
+  lastAffected?: string
   notificationPending?: boolean
   notificationEvent?: string
+  notificationAttempts?: number
+  notificationAttemptEvent?: string
+  notificationNextAttemptAt?: string
+  notificationAbandoned?: boolean
 }
 
 const STORE_FILE = join(process.cwd(), 'data', 'incidents-manual.json')
+
+// Minutes to wait before retry n+1 after failed attempt n; the last attempt is abandoned.
+const NOTIFY_BACKOFF_MIN = [1, 5, 15, 30, 60]
+export const NOTIFY_MAX_ATTEMPTS = NOTIFY_BACKOFF_MIN.length + 1
+
+export function notificationDue(incident: IncidentDoc, now = Date.now()): boolean {
+  if (incident.notificationAttemptEvent !== incident.notificationEvent) return true
+  return !incident.notificationNextAttemptAt || new Date(incident.notificationNextAttemptAt).getTime() <= now
+}
+
+/** Collapses runs of identical notification timeline entries; returns how many were removed. */
+export function compactNotificationTimeline(incident: Pick<IncidentDoc, 'timeline'>): number {
+  const out: TimelineEvent[] = []
+  let removed = 0
+  for (const ev of incident.timeline ?? []) {
+    const prev = out[out.length - 1]
+    if (ev.type === 'notification' && prev?.type === 'notification' && prev.title === ev.title && prev.description === ev.description) {
+      prev.metadata = { ...prev.metadata, repeats: Number(prev.metadata?.repeats ?? 1) + 1, lastTs: ev.ts }
+      removed++
+      continue
+    }
+    out.push(ev)
+  }
+  if (removed) incident.timeline = out
+  return removed
+}
 
 function loadStore(): Map<string, IncidentDoc> {
   try {
     if (!existsSync(STORE_FILE)) return new Map()
     const raw = JSON.parse(readFileSync(STORE_FILE, 'utf8')) as Record<string, IncidentDoc>
+    let compacted = 0
+    for (const incident of Object.values(raw)) compacted += compactNotificationTimeline(incident)
+    if (compacted) writeAtomicJson(STORE_FILE, raw)
     return new Map(Object.entries(raw))
   } catch {
     throw new Error('Unable to read incident history')
@@ -184,23 +218,86 @@ export function persistStore(): void {
   saveStore(manualStore)
 }
 
+const WORKLOAD_LABELS = ['deployment', 'statefulset', 'daemonset', 'job_name', 'pod', 'container'] as const
+
+/** Which workloads an incident's alerts point at, e.g. "shop/web-1 (KubePodCrashLooping)"; grouped incidents have generic titles. */
+export function affectedSummary(incident: Pick<IncidentDoc, 'alerts'>, max = 3): string {
+  const seen = new Map<string, Set<string>>()
+  for (const a of incident.alerts ?? []) {
+    const labels = a.labels ?? {}
+    const workload = WORKLOAD_LABELS.map(k => labels[k]).find(Boolean) ?? labels.service ?? labels.job ?? labels.instance
+    const target = [labels.namespace, workload].filter(Boolean).join('/')
+    if (!target) continue
+    if (!seen.has(target)) seen.set(target, new Set())
+    seen.get(target)!.add(a.name)
+  }
+  const entries = [...seen.entries()]
+  const shown = entries.slice(0, max).map(([target, names]) => `${target} (${[...names].join(', ')})`)
+  if (entries.length > max) shown.push(`+${entries.length - max} more`)
+  return shown.join('; ')
+}
+
+/** Escalation levels count from the latest reopen, not from the alert's original start. */
+export function escalationClockStart(incident: Pick<IncidentDoc, 'createdAt' | 'timeline'>): number {
+  const reopened = (incident.timeline ?? []).filter(e => e.title === 'Alerts firing again').map(e => Date.parse(e.ts) || 0)
+  return Math.max(Date.parse(incident.createdAt) || 0, ...reopened)
+}
+
 export async function dispatchIncidentNotification(incident: IncidentDoc): Promise<void> {
   if (notificationLocks.has(incident.id)) return
   notificationLocks.add(incident.id)
   try {
   const event = incident.notificationEvent ?? 'incident.created'
   const generation = incident.updatedAt
+  if (incident.notificationAbandoned || incident.notificationAttemptEvent !== event) {
+    incident.notificationAttempts = 0
+    incident.notificationAbandoned = false
+  }
   const base = (process.env.NEXTAUTH_URL ?? 'http://localhost:3030').replace(/\/$/, '')
-  const result = await notifyIncident({ ...incident, url: `${base}/incidents?id=${encodeURIComponent(incident.id)}` }, event, incident.notificationChannels ?? [])
+  const result = await notifyIncident({ ...incident, detail: affectedSummary(incident) || incident.lastAffected, url: `${base}/incidents?id=${encodeURIComponent(incident.id)}` }, event, incident.notificationChannels ?? [])
   if (incident.notificationEvent !== event || incident.updatedAt !== generation) return
   incident.notificationChannels = result.channels
-  incident.notificationPending = !result.ok
   const now = new Date().toISOString()
-  incident.timeline.push({ id: `tl-${incident.id}-${now}-notification`, ts: now, type: 'notification', title: `Notification ${result.status}`, description: `${event}: ${result.channels.join(', ') || 'no channel delivered'}`, actor: 'system', metadata: { status: result.status, channels: result.channels } })
+  const note = (title: string, description: string, metadata: Record<string, unknown>) =>
+    incident.timeline.push({ id: `tl-${incident.id}-${now}-notification`, ts: now, type: 'notification', title, description, actor: 'system', metadata })
+  if (result.ok) {
+    incident.notificationPending = false
+    incident.notificationAttempts = 0
+    incident.notificationNextAttemptAt = undefined
+    note(`Notification ${result.status}`, `${event}: ${result.channels.join(', ') || 'no channel delivered'}`, { status: result.status, channels: result.channels })
+  } else {
+    const attempts = (incident.notificationAttempts ?? 0) + 1
+    incident.notificationAttempts = attempts
+    incident.notificationAttemptEvent = event
+    if (attempts >= NOTIFY_MAX_ATTEMPTS) {
+      incident.notificationPending = false
+      incident.notificationAbandoned = true
+      incident.notificationNextAttemptAt = undefined
+      note('Notification abandoned', `${event}: gave up after ${attempts} attempts`, { status: result.status, channels: result.channels, attempts })
+    } else {
+      incident.notificationPending = true
+      incident.notificationNextAttemptAt = new Date(Date.now() + NOTIFY_BACKOFF_MIN[attempts - 1]! * 60_000).toISOString()
+      if (attempts === 1) note(`Notification ${result.status}`, `${event}: ${result.channels.join(', ') || 'no channel delivered'}`, { status: result.status, channels: result.channels })
+    }
+  }
   persistStore()
   } finally {
     notificationLocks.delete(incident.id)
   }
+}
+
+// A manual resolve gets this long to take effect before still-firing alerts reopen the incident.
+export const REOPEN_GRACE_MS = 30 * 60 * 1000
+
+function stillFiringAfterResolve(incident: IncidentDoc): boolean {
+  const resolvedMs = incident.resolvedAt ? new Date(incident.resolvedAt).getTime() : 0
+  return Date.now() - resolvedMs > REOPEN_GRACE_MS
+}
+
+const ALERT_SEVERITY: Record<string, string> = { warning: 'medium', error: 'high', major: 'high', page: 'critical', minor: 'low' }
+export function normalizeAlertSeverity(raw: string | undefined): string {
+  const s = (raw ?? 'medium').toLowerCase()
+  return ALERT_SEVERITY[s] ?? s
 }
 
 export function reconcileAutoIncidents(incidents: IncidentDoc[], hasPrometheus: boolean): void {
@@ -216,7 +313,7 @@ export function reconcileAutoIncidents(incidents: IncidentDoc[], hasPrometheus: 
       appendAuditLog({ ts: now, user: 'system', action: 'incident.created', detail: detected.id })
       continue
     }
-    if (existing.state === 'resolved' && existing.alertCount === 0) {
+    if (existing.state === 'resolved' && (existing.alertCount === 0 || stillFiringAfterResolve(existing))) {
       existing.state = 'investigating'
       existing.createdAt = detected.createdAt
       existing.slaDeadline = detected.slaDeadline
@@ -236,6 +333,7 @@ export function reconcileAutoIncidents(incidents: IncidentDoc[], hasPrometheus: 
   }
   for (const incident of manualStore.values()) {
     if (incident.source !== 'auto' || activeIds.has(incident.id) || incident.alertCount === 0) continue
+    incident.lastAffected = affectedSummary(incident) || incident.lastAffected
     incident.alerts = []
     incident.alertCount = 0
     incident.updatedAt = now
@@ -390,10 +488,10 @@ export async function buildAutoIncidents(): Promise<{ incidents: IncidentDoc[]; 
 
   for (const r of firingResults) {
     const alertname: string = r.metric?.alertname ?? ''
-    const severity: string = r.metric?.severity ?? 'medium'
+    const severity: string = normalizeAlertSeverity(r.metric?.severity)
     const alertstate: string = r.metric?.alertstate ?? 'firing'
 
-    if (!alertname || alertname === 'Watchdog' || severity === 'none') continue
+    if (!alertname || alertname === 'Watchdog' || r.metric?.severity === 'none') continue
     if (alertstate !== 'firing') continue
 
     const job = r.metric?.job ?? r.metric?.namespace ?? ''

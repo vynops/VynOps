@@ -25,7 +25,7 @@ type AlertDoc = {
 
 type TimelineEvent = {
   id: string; ts: string; type: string; title: string; description: string
-  severity?: string; actor?: string
+  severity?: string; actor?: string; metadata?: Record<string, unknown>
 }
 
 type BlastRadius = {
@@ -41,11 +41,13 @@ type IncidentDoc = {
   alertCount: number; alerts: AlertDoc[]; timeline: TimelineEvent[]
   blastRadius: BlastRadius; runbookUrls: string[]; linkedDeployments: string[]
   source: 'auto' | 'manual'; durationMinutes: number; escalationLevel?: number
+  notificationChannels?: string[]; notificationPending?: boolean; notificationAbandoned?: boolean
+  notificationAttempts?: number; notificationNextAttemptAt?: string
 }
 
 type Metrics = {
   open: number; critical: number; slaBreached: number; slaBreaching: number
-  avgMttrMinutes: number | null; slaCompliancePct: number; totalAlerts: number
+  avgMttrMinutes: number | null; slaCompliancePct: number; totalAlerts: number; windowDays?: number
 }
 
 type ApiResponse = { incidents: IncidentDoc[]; metrics: Metrics; source: string }
@@ -63,7 +65,27 @@ const EMPTY: ApiResponse = {
 
 const PAGE_SIZE = 25
 
-const STATE_FILTERS = ['all', 'open', 'investigating', 'identified', 'monitoring', 'resolved'] as const
+const STATE_FILTERS = ['all', 'active', 'open', 'investigating', 'identified', 'monitoring', 'resolved'] as const
+
+// 'active' = every unresolved state, so the Open Incidents KPI and its click-through agree.
+function matchesState(inc: { state: string }, f: string): boolean {
+  if (f === 'all') return true
+  if (f === 'active') return inc.state !== 'resolved'
+  return inc.state === f
+}
+
+function notificationLabel(inc: IncidentDoc): { text: string; tone: 'ok' | 'warn' | 'bad' } | null {
+  if (inc.notificationAbandoned) return { text: `Notification failed after ${inc.notificationAttempts ?? '?'} attempts`, tone: 'bad' }
+  if (inc.notificationPending) return { text: `Notification pending${inc.notificationAttempts ? ` (attempt ${inc.notificationAttempts})` : ''}`, tone: 'warn' }
+  if (inc.notificationChannels?.length) return { text: `Notified via ${inc.notificationChannels.join(', ')}`, tone: 'ok' }
+  return null
+}
+
+const NOTIFY_TONE: Record<string, string> = {
+  ok:   'text-success',
+  warn: 'text-warning',
+  bad:  'text-danger',
+}
 
 const STATE_COLORS: Record<string, string> = {
   open:          'text-danger  bg-danger/10  border-danger/20',
@@ -90,6 +112,7 @@ const TL_ICONS: Record<string, React.ReactNode> = {
   deployment:  <Activity className="w-3 h-3 text-blue-400" />,
   user_action: <Users className="w-3 h-3 text-surface-400" />,
   escalation:  <ShieldAlert className="w-3 h-3 text-danger" />,
+  notification: <Radio className="w-3 h-3 text-brand-400" />,
   k8s_event:   <Activity className="w-3 h-3 text-info" />,
   resolution:  <CheckCircle2 className="w-3 h-3 text-success" />,
 }
@@ -104,7 +127,10 @@ function fmtDuration(minutes: number): string {
 
 // -- Sub-components --------------------------------------------
 
-function SlaTag({ deadline, breached }: { deadline: string; breached: boolean }) {
+function SlaTag({ deadline, breached, resolved }: { deadline: string; breached: boolean; resolved?: boolean }) {
+  if (resolved) return breached
+    ? <span className="text-2xs px-1.5 py-0.5 rounded font-semibold text-danger bg-danger/10 border border-danger/30">SLA missed</span>
+    : <span className="text-2xs px-1.5 py-0.5 rounded font-semibold text-success bg-success/10 border border-success/20">SLA met</span>
   const minsLeft = Math.round((new Date(deadline).getTime() - Date.now()) / 60000)
   if (breached)        return <span className="text-2xs px-1.5 py-0.5 rounded font-semibold text-white bg-danger">SLA BREACHED</span>
   if (minsLeft < 30)   return <span className="text-2xs px-1.5 py-0.5 rounded font-semibold text-warning bg-warning/10 border border-warning/30">{minsLeft}m left</span>
@@ -122,6 +148,7 @@ function IncidentsPage() {
   const [selected,    setSelected]    = useState<IncidentDoc | null>(null)
   const [showModal,   setShowModal]   = useState(false)
   const [page,        setPage]        = useState(0)
+  const [showHistory, setShowHistory] = useState(false)
 
   // New incident form
   const [newTitle,    setNewTitle]    = useState('')
@@ -164,9 +191,9 @@ function IncidentsPage() {
   }, [timeRange])
 
   const filtered = useMemo(() => {
-    const cutoff = Date.now() - windowMs
+    const cutoff = showHistory ? 0 : Date.now() - windowMs
     return data.incidents.filter(inc => {
-      if (stateFilter !== 'all' && inc.state !== stateFilter) return false
+      if (!matchesState(inc, stateFilter)) return false
       if (sevFilter   !== 'all' && inc.severity !== sevFilter) return false
       // Hide resolved incidents older than the selected time window
       if (inc.state === 'resolved' && inc.resolvedAt && new Date(inc.resolvedAt).getTime() < cutoff) return false
@@ -178,17 +205,23 @@ function IncidentsPage() {
             !inc.description?.toLowerCase().includes(q)) return false
       }
       return true
-    })
-  }, [data.incidents, stateFilter, sevFilter, search, windowMs])
+    }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+  }, [data.incidents, stateFilter, sevFilter, search, windowMs, showHistory])
   // Reset page when filters change
-  useEffect(() => setPage(0), [stateFilter, sevFilter, search, windowMs])
+  useEffect(() => setPage(0), [stateFilter, sevFilter, search, windowMs, showHistory])
+
+  const hiddenResolved = useMemo(() => {
+    if (showHistory) return 0
+    const cutoff = Date.now() - windowMs
+    return data.incidents.filter(inc => inc.state === 'resolved' && inc.resolvedAt && new Date(inc.resolvedAt).getTime() < cutoff).length
+  }, [data.incidents, windowMs, showHistory])
 
   const paginated = useMemo(() =>
     filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
   [filtered, page])
   // B3: counts must reflect same time-window + sev + search filters as the visible list
   const counts = useMemo(() => {
-    const cutoff = Date.now() - windowMs
+    const cutoff = showHistory ? 0 : Date.now() - windowMs
     const base = data.incidents.filter(inc => {
       if (sevFilter !== 'all' && inc.severity !== sevFilter) return false
       if (inc.state === 'resolved' && inc.resolvedAt && new Date(inc.resolvedAt).getTime() < cutoff) return false
@@ -200,11 +233,11 @@ function IncidentsPage() {
       return true
     })
     const c: Record<string, number> = { all: base.length }
-    for (const f of STATE_FILTERS.slice(1)) c[f] = base.filter(i => i.state === f).length
+    for (const f of STATE_FILTERS.slice(1)) c[f] = base.filter(i => matchesState(i, f)).length
     return c
-  }, [data.incidents, sevFilter, search, windowMs])
+  }, [data.incidents, sevFilter, search, windowMs, showHistory])
 
-  const { open, critical, slaBreached, slaBreaching, avgMttrMinutes, slaCompliancePct, totalAlerts } = data.metrics
+  const { open, critical, slaBreached, slaBreaching, avgMttrMinutes, slaCompliancePct, totalAlerts, windowDays } = data.metrics
 
   async function declareIncident() {
     if (!newTitle.trim()) return
@@ -300,10 +333,10 @@ function IncidentsPage() {
         {/* KPI strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-surface-800 border-b border-surface-800 flex-shrink-0">
           {[
-            { label: 'Open Incidents',  value: open,     sub: slaBreaching > 0 ? `${slaBreaching} SLA at risk` : 'No SLA risk',  color: open > 0 ? 'text-white' : 'text-surface-500',     icon: <Flame className="w-4 h-4" />,        iconCls: open > 0 ? 'text-danger' : 'text-surface-600',  onClick: () => { setStateFilter('open');     setSevFilter('all') } },
+            { label: 'Open Incidents',  value: open,     sub: slaBreaching > 0 ? `${slaBreaching} SLA at risk` : 'No SLA risk',  color: open > 0 ? 'text-white' : 'text-surface-500',     icon: <Flame className="w-4 h-4" />,        iconCls: open > 0 ? 'text-danger' : 'text-surface-600',  onClick: () => { setStateFilter('active');   setSevFilter('all') } },
             { label: 'Critical Active', value: critical, sub: slaBreached > 0 ? `${slaBreached} SLA breached` : 'SLA compliant', color: critical > 0 ? 'text-danger' : 'text-surface-500', icon: <AlertTriangle className="w-4 h-4" />, iconCls: critical > 0 ? 'text-danger' : 'text-surface-600', onClick: () => { setStateFilter('all');       setSevFilter('critical') } },
-            { label: 'Avg MTTR',        value: avgMttrMinutes !== null ? fmtDuration(avgMttrMinutes) : '\u2014', sub: 'resolved incidents', color: 'text-white', icon: <Timer className="w-4 h-4" />, iconCls: 'text-brand-400', onClick: () => { setStateFilter('resolved'); setSevFilter('all') } },
-            { label: 'SLA Compliance',  value: `${slaCompliancePct}%`, sub: `${slaBreached} breached`, color: slaCompliancePct >= 90 ? 'text-success' : slaCompliancePct >= 70 ? 'text-warning' : 'text-danger', icon: <ShieldAlert className="w-4 h-4" />, iconCls: slaCompliancePct >= 90 ? 'text-success' : slaCompliancePct >= 70 ? 'text-warning' : 'text-danger', onClick: () => { setStateFilter('all'); setSevFilter('all') } },
+            { label: 'Avg MTTR',        value: avgMttrMinutes !== null ? fmtDuration(avgMttrMinutes) : '\u2014', sub: `resolved \u00b7 last ${windowDays ?? 30}d`, color: 'text-white', icon: <Timer className="w-4 h-4" />, iconCls: 'text-brand-400', onClick: () => { setStateFilter('resolved'); setSevFilter('all') } },
+            { label: 'SLA Compliance',  value: `${slaCompliancePct}%`, sub: `${slaBreached} breached \u00b7 last ${windowDays ?? 30}d`, color: slaCompliancePct >= 90 ? 'text-success' : slaCompliancePct >= 70 ? 'text-warning' : 'text-danger', icon: <ShieldAlert className="w-4 h-4" />, iconCls: slaCompliancePct >= 90 ? 'text-success' : slaCompliancePct >= 70 ? 'text-warning' : 'text-danger', onClick: () => { setStateFilter('all'); setSevFilter('all') } },
           ].map(kpi => (
             <button key={kpi.label} onClick={kpi.onClick} className="bg-surface-900 px-5 py-3 flex items-center gap-3 hover:bg-surface-800/60 transition-colors text-left w-full">
               <span className={kpi.iconCls}>{kpi.icon}</span>
@@ -342,6 +375,15 @@ function IncidentsPage() {
           ))}
         </div>
 
+        {/* Resolved-history hint */}
+        {(hiddenResolved > 0 || showHistory) && (
+          <div className="flex items-center gap-2 px-3 sm:px-6 py-1.5 border-b border-surface-800 text-2xs text-surface-500 flex-shrink-0">
+            {showHistory
+              ? <>Showing full history. <button onClick={() => setShowHistory(false)} className="text-brand-400 hover:text-brand-300 underline">Back to last {timeRange ?? '24h'}</button></>
+              : <>{hiddenResolved} older resolved incident{hiddenResolved !== 1 ? 's' : ''} hidden by the {timeRange ?? '24h'} window. <button onClick={() => setShowHistory(true)} className="text-brand-400 hover:text-brand-300 underline">Show all history</button></>}
+          </div>
+        )}
+
         {/* Incident list */}
         <div className="flex-1 overflow-y-auto">
           {loading && data.incidents.length === 0 ? (
@@ -370,6 +412,7 @@ function IncidentsPage() {
                       <span className={cn('text-2xs px-1.5 py-0.5 rounded border capitalize font-medium', SEV_BADGE[inc.severity])}>{inc.severity}</span>
                       <span className={cn('text-2xs px-1.5 py-0.5 rounded border capitalize font-medium', STATE_COLORS[inc.state])}>{inc.state}</span>
                       {inc.source === 'auto' && <span className="text-2xs px-1.5 py-0.5 rounded border font-medium text-surface-500 bg-surface-800 border-surface-700">auto-detected</span>}
+                      {(inc.escalationLevel ?? 0) > 0 && <span className="text-2xs px-1.5 py-0.5 rounded border font-medium text-danger bg-danger/10 border-danger/30">L{inc.escalationLevel}</span>}
                     </div>
                     <p className="text-sm font-semibold text-white mt-1 truncate">{inc.title}</p>
                     <div className="flex items-center gap-3 mt-1 text-2xs text-surface-500 flex-wrap">
@@ -377,10 +420,11 @@ function IncidentsPage() {
                       <span>{inc.service}</span>
                       {inc.alertCount > 0 && <span className="flex items-center gap-0.5 text-warning"><AlertTriangle className="w-3 h-3" />{inc.alertCount} alert{inc.alertCount !== 1 ? 's' : ''}</span>}
                       {inc.blastRadius.affectedServices.length > 0 && <span>{inc.blastRadius.affectedServices.length} svc affected</span>}
+                      {(inc.notificationPending || inc.notificationAbandoned) && (() => { const n = notificationLabel(inc); return n ? <span className={cn('flex items-center gap-0.5', NOTIFY_TONE[n.tone])}><Radio className="w-3 h-3" />{n.text}</span> : null })()}
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-                    <SlaTag deadline={inc.slaDeadline} breached={inc.slaBreached} />
+                    <SlaTag deadline={inc.slaDeadline} breached={inc.slaBreached} resolved={inc.state === 'resolved'} />
                     <span className="text-2xs text-surface-600">{inc.owner}</span>
                   </div>
                   <Link href={`/incidents/${inc.id}`} onClick={e => e.stopPropagation()}
@@ -394,7 +438,7 @@ function IncidentsPage() {
           {/* -- Pagination controls -- */}
           {filtered.length > PAGE_SIZE && (
             <div className="flex items-center justify-between px-4 py-3 border-t border-surface-800 text-xs text-surface-500">
-              <span>{page * PAGE_SIZE + 1}\u2013{Math.min((page + 1) * PAGE_SIZE, filtered.length)} of {filtered.length}</span>
+              <span>{page * PAGE_SIZE + 1}{'\u2013'}{Math.min((page + 1) * PAGE_SIZE, filtered.length)} of {filtered.length}</span>
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => setPage(p => Math.max(0, p - 1))}
@@ -463,6 +507,8 @@ function IncidentsPage() {
                   { label: 'Service',      value: selected.service },
                   { label: 'Owner',        value: selected.owner },
                   { label: 'Team',         value: selected.team },
+                  { label: 'Escalation',   value: (selected.escalationLevel ?? 0) > 0 ? `Level ${selected.escalationLevel}` : 'Not escalated' },
+                  { label: 'Notification', value: notificationLabel(selected)?.text ?? 'None sent' },
                   { label: 'Environment',  value: selected.environment },
                   { label: 'Created',      value: new Date(selected.createdAt).toLocaleString() },
                   { label: 'SLA Deadline', value: new Date(selected.slaDeadline).toLocaleString() },
@@ -512,7 +558,7 @@ function IncidentsPage() {
                         <span className={cn('w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0', SEV_BAR[a.severity] ?? 'bg-surface-500')} />
                         <div className="min-w-0 flex-1">
                           <p className="text-xs font-medium text-white">{a.name}</p>
-                          <p className="text-2xs text-surface-500 mt-0.5 truncate">{a.labels.job ?? a.labels.namespace ?? a.labels.instance ?? '�'}</p>
+                          <p className="text-2xs text-surface-500 mt-0.5 truncate">{a.labels.job ?? a.labels.namespace ?? a.labels.instance ?? '\u2014u2014'}</p>
                           <p className="text-2xs text-surface-600 mt-0.5" suppressHydrationWarning>Firing for {formatDistanceToNow(new Date(a.startsAt))}</p>
                         </div>
                         <span className={cn('text-2xs px-1.5 py-0.5 rounded border flex-shrink-0', SEV_BADGE[a.severity])}>{a.severity}</span>
@@ -535,7 +581,7 @@ function IncidentsPage() {
                             {TL_ICONS[ev.type] ?? <Activity className="w-3 h-3 text-surface-400" />}
                           </div>
                           <div className="flex-1 min-w-0 pb-1">
-                            <p className="text-xs font-semibold text-white">{ev.title}</p>
+                            <p className="text-xs font-semibold text-white">{ev.title}{Number(ev.metadata?.repeats) > 1 ? ` \u00d7${ev.metadata?.repeats}` : ''}</p>
                             <p className="text-2xs text-surface-500 mt-0.5 leading-relaxed">{ev.description}</p>
                             {ev.actor && <p className="text-2xs text-surface-600 mt-0.5">{ev.actor}</p>}
                             <p className="text-2xs text-surface-700 mt-1" suppressHydrationWarning>

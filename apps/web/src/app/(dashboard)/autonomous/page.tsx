@@ -144,6 +144,7 @@ function AiPlansSection() {
   const [planEnabled,setPlanEnabled]= useState(false)
   const [autoExec,   setAutoExec]   = useState(false)
   const [threshold,  setThreshold]  = useState(85)
+  const [maxRisk,    setMaxRisk]    = useState<'low' | 'medium' | 'high'>('low')
   const [cfgSaved,   setCfgSaved]   = useState(false)
   const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set())
   const [expanded,   setExpanded]   = useState<Set<string>>(new Set())
@@ -158,6 +159,7 @@ function AiPlansSection() {
     setPlanEnabled(d.auto_plan_enabled ?? false)
     setAutoExec(d.auto_execute_plans ?? false)
     setThreshold(d.auto_execute_threshold ?? 85)
+    setMaxRisk(d.auto_execute_max_risk ?? 'low')
   }
   async function loadPlans() {
     const r = await fetch('/api/autonomous/plan')
@@ -171,7 +173,7 @@ function AiPlansSection() {
     setPlanError(null)
     const r = await fetch('/api/settings/config', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ auto_plan_enabled: planEnabled, auto_execute_plans: autoExec, auto_execute_threshold: threshold }),
+      body: JSON.stringify({ auto_plan_enabled: planEnabled, auto_execute_plans: autoExec, auto_execute_threshold: threshold, auto_execute_max_risk: maxRisk }),
     })
     if (!r.ok) { setPlanError(`Config save failed (HTTP ${r.status})`); return }
     setCfgSaved(true); setTimeout(() => setCfgSaved(false), 2000)
@@ -266,6 +268,15 @@ function AiPlansSection() {
             className="w-24 accent-purple-500" />
           <span className="text-xs text-purple-300 w-8">{threshold}%</span>
         </div>
+        <label className="flex items-center gap-2 text-xs text-surface-400">
+          Max auto risk
+          <select value={maxRisk} onChange={e => setMaxRisk(e.target.value as 'low' | 'medium' | 'high')}
+            className="bg-surface-800 border border-surface-700 rounded px-1.5 py-0.5 text-xs text-white">
+            <option value="low">low (read-only)</option>
+            <option value="medium">medium (restart/scale/rollback)</option>
+            <option value="high">high</option>
+          </select>
+        </label>
         <button onClick={savePlanConfig}
           className={cn('ml-auto px-3 py-1 rounded-lg text-xs font-medium transition-colors', cfgSaved ? 'bg-green-500/20 text-green-400' : 'bg-surface-700 hover:bg-surface-600 text-white')}>
           {cfgSaved ? 'Saved ✓' : 'Save config'}

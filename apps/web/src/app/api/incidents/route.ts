@@ -12,10 +12,16 @@ import {
   dispatchIncidentNotification,
 } from '@/app/api/incidents/shared'
 
-export async function GET() {
+// Headline metrics cover unresolved incidents plus those resolved in the last N days, so old breaches age out.
+const DEFAULT_METRICS_WINDOW_DAYS = 30
+
+export async function GET(req?: Request) {
   const deny = await assertSession()
   if (deny) return deny
   const now = Date.now()
+  const requested = req ? Number(new URL(req.url).searchParams.get('windowDays')) : NaN
+  const windowDays = Number.isFinite(requested) && requested >= 1 && requested <= 365 ? Math.floor(requested) : DEFAULT_METRICS_WINDOW_DAYS
+  const windowStart = now - windowDays * 86_400_000
   const { incidents: autoIncidents, totalAlerts, hasPrometheus } = await buildAutoIncidents()
 
   // Merge: manualStore entries override auto-incidents with the same ID (don't duplicate)
@@ -40,15 +46,16 @@ export async function GET() {
   })
 
   const nonResolved = all.filter(i => i.state !== 'resolved')
+  const inWindow = all.filter(i => i.state !== 'resolved' || !i.resolvedAt || new Date(i.resolvedAt).getTime() >= windowStart)
   const open = nonResolved.length
   const critical = nonResolved.filter(i => i.severity === 'critical').length
-  const slaBreachedCnt = all.filter(i => i.slaBreached).length
+  const slaBreachedCnt = inWindow.filter(i => i.slaBreached).length
   const slaBreachingCnt = nonResolved.filter(i => {
     if (i.slaBreached) return false
     return new Date(i.slaDeadline).getTime() - now < 30 * 60 * 1000
   }).length
 
-  const resolved = all.filter(i => i.state === 'resolved' && i.resolvedAt)
+  const resolved = inWindow.filter(i => i.state === 'resolved' && i.resolvedAt)
   const avgMttrMinutes = resolved.length > 0
     ? Math.round(
         resolved.reduce(
@@ -58,8 +65,8 @@ export async function GET() {
       )
     : null
 
-  const slaCompliancePct = all.length > 0
-    ? Math.round(((all.length - slaBreachedCnt) / all.length) * 100)
+  const slaCompliancePct = inWindow.length > 0
+    ? Math.round(((inWindow.length - slaBreachedCnt) / inWindow.length) * 100)
     : 100
 
   return NextResponse.json({
@@ -71,6 +78,7 @@ export async function GET() {
       slaBreaching: slaBreachingCnt,
       avgMttrMinutes,
       slaCompliancePct,
+      windowDays,
       totalAlerts,
     },
     source: hasPrometheus ? 'prometheus' : 'unavailable',

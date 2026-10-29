@@ -6,8 +6,8 @@ import { assertOperator }                                from '@/lib/rbac'
 import { manualStore, buildAutoIncidents, persistStore } from '@/app/api/incidents/shared'
 import type { IncidentDoc }                              from '@/app/api/incidents/shared'
 import { resolveK8sUrl, K8S_TIMEOUT_MS }                from '@/lib/cluster'
+import { internalFetch }                                from '@/lib/internal'
 
-const BASE     = (process.env.NEXTAUTH_URL ?? 'http://localhost:3000').replace(/\/$/, '')
 const DATA_DIR = join(process.cwd(), 'data')
 const LOG_FILE = join(DATA_DIR, 'automation.log.jsonl')
 
@@ -143,19 +143,15 @@ export async function POST(req: Request) {
     let status = 'failed'
 
     try {
-      const res = await fetch(`${BASE}/api/automation/execute`, {
+      const res = await internalFetch('/api/automation/execute', {
         method:  'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-internal-secret': process.env.CRON_SECRET ?? '',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           runbookId,
           namespace: defaultNamespace,
           target:    '',
           params:    {},
         }),
-        signal: AbortSignal.timeout(30_000),
       })
       execResult = await res.json()
       status = execResult?.status ?? 'failed'

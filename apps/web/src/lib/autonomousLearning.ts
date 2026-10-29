@@ -28,6 +28,7 @@ export interface ActionEntry {
   patternKey?: string
   dryRun:      boolean
   insight?:    string
+  workloadKind?: 'Deployment' | 'StatefulSet' | 'DaemonSet'
 }
 
 export interface OutcomeEntry {

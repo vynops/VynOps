@@ -4,7 +4,9 @@
  * GET    /api/autonomous/plan              ? list all plans (handled by parent route)
  */
 import { NextRequest, NextResponse }                     from 'next/server'
-import { readPlans, updatePlan, ACTION_VOCAB, INTERNAL_PLAN_SECRET } from '@/app/api/autonomous/plan/shared'
+import { readPlans, updatePlan, ACTION_VOCAB, exceedsAutoRisk } from '@/app/api/autonomous/plan/shared'
+import { readConfig }                                  from '@/app/api/settings/config/shared'
+import { hasInternalSecret }                              from '@/lib/internal'
 import type { RemediationPlan }                          from '@/app/api/autonomous/plan/shared'
 import { resolveK8sUrl, K8S_TIMEOUT_MS }                from '@/lib/cluster'
 import { appendAuditLog }                                from '@/app/api/settings/config/shared'
@@ -218,8 +220,7 @@ export async function POST(
   let body: any = {}
   try { body = await req.json() } catch {}
 
-  const isAutoApprove = body?.auto === true &&
-    req.headers.get('x-internal-secret') === INTERNAL_PLAN_SECRET
+  const isAutoApprove = body?.auto === true && hasInternalSecret(req.headers)
   let session: any = null
   if (!isAutoApprove) {
     const deny = await assertOperator()
@@ -233,6 +234,9 @@ export async function POST(
   if (plan.status === 'dismissed') return NextResponse.json({ error: 'Plan was dismissed' }, { status: 400 })
   if (plan.status === 'executing' || plan.status === 'done') {
     return NextResponse.json({ error: `Plan already ${plan.status}` }, { status: 400 })
+  }
+  if (isAutoApprove && exceedsAutoRisk(plan.steps, readConfig().auto_execute_max_risk)) {
+    return NextResponse.json({ error: 'Plan exceeds the auto-execute risk limit; operator approval required' }, { status: 403 })
   }
 
   const approvedBy = isAutoApprove ? 'system' : ((session?.user as any)?.email ?? 'operator')

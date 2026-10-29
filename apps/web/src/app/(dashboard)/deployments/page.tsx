@@ -65,9 +65,10 @@ function statusIcon(status: DeploymentEvent['status'], size = 'w-4 h-4') {
 }
 
 function riskBadge(score: number) {
-  if (score >= 70) return <span className="text-2xs font-bold px-1.5 py-0.5 rounded-full bg-danger/15 text-danger border border-danger/30">Risk {score}</span>
-  if (score >= 40) return <span className="text-2xs font-bold px-1.5 py-0.5 rounded-full bg-warning/15 text-warning border border-warning/30">Risk {score}</span>
-  return <span className="text-2xs px-1.5 py-0.5 rounded-full bg-success/10 text-success border border-success/20">Risk {score}</span>
+  const title = 'Estimated from change size, timing and replica count; not a prediction model'
+  if (score >= 70) return <span title={title} className="text-2xs font-bold px-1.5 py-0.5 rounded-full bg-danger/15 text-danger border border-danger/30">Risk {score}</span>
+  if (score >= 40) return <span title={title} className="text-2xs font-bold px-1.5 py-0.5 rounded-full bg-warning/15 text-warning border border-warning/30">Risk {score}</span>
+  return <span title={title} className="text-2xs px-1.5 py-0.5 rounded-full bg-success/10 text-success border border-success/20">Risk {score}</span>
 }
 
 function groupByDay(deploys: DeploymentEvent[]) {
@@ -126,6 +127,9 @@ function DeployRow({ dep, selected, onSelect }: { dep: DeploymentEvent; selected
               <RotateCcw className="w-2.5 h-2.5" /> Rollback
             </span>
           )}
+          {dep.scaledToZero && (
+            <span className="text-2xs font-semibold px-2 py-0.5 rounded-full bg-surface-800 text-surface-400 border border-surface-700">Scaled to 0</span>
+          )}
           {riskBadge(dep.riskScore)}
         </div>
         <div className="flex items-center gap-3 text-2xs text-surface-400 flex-wrap">
@@ -134,7 +138,7 @@ function DeployRow({ dep, selected, onSelect }: { dep: DeploymentEvent; selected
           {dep.branch !== '—' && <span className="flex items-center gap-1"><GitBranch className="w-3 h-3" />{dep.branch}</span>}
           <span className={cn('px-1.5 py-0.5 rounded font-medium', METHOD_COLORS[dep.method] ?? 'text-surface-400 bg-surface-800')}>{METHOD_LABELS[dep.method] ?? dep.method}</span>
           <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{dep.isEstimated ? '\u007e' : ''}{fmtDuration(dep.durationSeconds)}</span>
-          <span className="flex items-center gap-1 text-surface-500"><GitCommit className="w-3 h-3" />{dep.commitSha.slice(0, 7)}</span>
+          {dep.commitSha && <span className="flex items-center gap-1 text-surface-500"><GitCommit className="w-3 h-3" />{dep.commitSha.slice(0, 7)}</span>}
           <span suppressHydrationWarning className="text-surface-500 ml-auto">{formatDistanceToNow(new Date(dep.startedAt), { addSuffix: true })}</span>
         </div>
         {/* Replica progress for in-progress */}
@@ -304,8 +308,8 @@ function DeployDetail({ dep, onViewLogs, onDescribe, onViewYaml, onViewTraces }:
       <div className="text-xs text-surface-500 space-y-1.5 pt-2 border-t border-surface-800">
         <div className="flex justify-between"><span>Namespace</span><span className="text-surface-300 font-mono">{dep.namespace}</span></div>
         <div className="flex justify-between"><span>Environment</span><span className="text-surface-300 capitalize">{dep.environment}</span></div>
-        <div className="flex justify-between"><span>Deployer</span><span className="text-surface-300 font-mono">{dep.deployer}</span></div>
-        <div className="flex justify-between"><span>Commit</span><span className="text-surface-300 font-mono">{dep.commitSha}</span></div>
+        <div className="flex justify-between"><span>Managed by</span><span className="text-surface-300 font-mono">{dep.deployer}</span></div>
+        <div className="flex justify-between"><span>Commit</span><span className="text-surface-300 font-mono">{dep.commitSha || '\u2014'}</span></div>
         <div className="flex justify-between"><span>Branch</span><span className="text-surface-300 font-mono">{dep.branch}</span></div>
       </div>
 
@@ -441,7 +445,7 @@ export default function DeploymentsPage() {
     const matchStatus = statusFilter === 'all' || d.status === statusFilter
     const matchEnv    = envFilter === 'all'    || d.environment === envFilter
     return matchSearch && matchStatus && matchEnv
-  }), [search, statusFilter, envFilter, deploymentHistory])
+  }).sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()), [search, statusFilter, envFilter, deploymentHistory])
 
   const groups = useMemo(() => groupByDay(filtered), [filtered])
 
@@ -462,6 +466,7 @@ export default function DeploymentsPage() {
     { label: 'Production',  value: 'production' },
     { label: 'Staging',     value: 'staging' },
     { label: 'Development', value: 'development' },
+    { label: 'Unknown',     value: 'unknown' },
   ]
 
   // -- DORA band tooltip labels ------------------------------------------------

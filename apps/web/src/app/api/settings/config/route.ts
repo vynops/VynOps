@@ -120,6 +120,7 @@ const configBodySchema = z.object({
   auto_plan_enabled:         z.boolean().optional(),
   auto_execute_plans:        z.boolean().optional(),
   auto_execute_threshold:    z.number().int().min(50).max(99).optional(),
+  auto_execute_max_risk:     z.enum(['low', 'medium', 'high']).optional(),
 }).partial()
 // ── POST — save config to runtime file ───────────────────────
 export async function POST(req: Request) {
@@ -195,6 +196,7 @@ export async function POST(req: Request) {
   if (body.auto_plan_enabled      !== undefined) { updated.auto_plan_enabled      = body.auto_plan_enabled;      changedFields.push('auto_plan_enabled') }
   if (body.auto_execute_plans     !== undefined) { updated.auto_execute_plans     = body.auto_execute_plans;     changedFields.push('auto_execute_plans') }
   if (body.auto_execute_threshold !== undefined) { updated.auto_execute_threshold = body.auto_execute_threshold; changedFields.push('auto_execute_threshold') }
+  if (body.auto_execute_max_risk  !== undefined) { updated.auto_execute_max_risk  = body.auto_execute_max_risk;  changedFields.push('auto_execute_max_risk') }
 
   writeConfig(updated)
 

@@ -1,9 +1,34 @@
 import { NextResponse } from 'next/server'
-import { readConfig as readRuntimeConfig, appendNotifLog } from '@/app/api/settings/config/shared'
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
+import { join } from 'path'
+import { readConfig as readRuntimeConfig, appendNotifLog, appendAuditLog } from '@/app/api/settings/config/shared'
+import { manualStore } from '@/app/api/incidents/shared'
+import { teamsPayload } from '@/lib/notify'
 import { resolveK8sUrl, resolvePromUrl , K8S_TIMEOUT_MS } from '@/lib/cluster'
 
 const SLACK = (process.env.SLACK_WEBHOOK_URL      ?? '')
 const PD_KEY= (process.env.PAGERDUTY_ROUTING_KEY  ?? '')
+
+// Crash-loop self-heal is capped per workload: a restart that does not fix it needs a human.
+const HEAL_LOG = join(process.cwd(), 'data', 'autoheal.log.jsonl')
+const HEAL_MAX_PER_24H = 3
+function recentHeals(key: string): number {
+  try {
+    if (!existsSync(HEAL_LOG)) return 0
+    const cutoff = Date.now() - 24 * 3600_000
+    return readFileSync(HEAL_LOG, 'utf8').split('\n').filter(Boolean).reduce((n, line) => {
+      try { const e = JSON.parse(line); return n + (e.key === key && Date.parse(e.ts) > cutoff ? 1 : 0) } catch { return n }
+    }, 0)
+  } catch { return 0 }
+}
+function recordHeal(key: string, restarts: number) {
+  const ts = new Date().toISOString()
+  try {
+    mkdirSync(join(process.cwd(), 'data'), { recursive: true })
+    appendFileSync(HEAL_LOG, JSON.stringify({ ts, key }) + '\n', 'utf8')
+  } catch { /* non-critical */ }
+  appendAuditLog({ ts, user: 'autonomous-agent', action: 'autonomous.auto_heal', detail: `${key} restarted (${restarts} restarts in CrashLoopBackOff)` })
+}
 
 // Module-level cooldown tracker (in-process, resets on server restart)
 // key = event type + optional fingerprint?
@@ -18,14 +43,14 @@ function shouldFire(key: string, cooldownMs: number): boolean {
 // Known false-positive alerts on k3d/k3s (control plane not scrape-able)
 const K3D_FALSE_POSITIVES = new Set(['KubeControllerManagerDown', 'KubeProxyDown', 'KubeSchedulerDown', 'KubeEtcdDown'])
 
-async function slackNotify(text: string, fields?: { title: string; value: string }[]) {
-  if (!SLACK) return
+async function slackNotify(url: string, text: string, fields?: { title: string; value: string }[]) {
+  if (!url) return
   const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text } }]
   if (fields?.length) {
     blocks.push({ type: 'section', fields: fields.map(f => ({ type: 'mrkdwn', text: `*${f.title}*\n${f.value}` })) })
   }
   try {
-    await fetch(SLACK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blocks }), signal: AbortSignal.timeout(K8S_TIMEOUT_MS) })
+    await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blocks }), signal: AbortSignal.timeout(K8S_TIMEOUT_MS) })
   } catch { /* non-critical */ }
 }
 
@@ -335,6 +360,11 @@ export async function GET() {
 
   // ?? Self-healing: auto-restart persistent crash loops (20+ restarts, 30-min cooldown) ??
   const autoHealed: { action: string; namespace: string; deployment: string; pod: string; reason: string; ts: string }[] = []
+  const autoHealSkipped: string[] = []   // would have healed, but autonomous healing is off or in dry-run
+  const healExhausted: string[] = []     // hit the per-workload restart cap
+  const rtCfg = readRuntimeConfig()
+  // Live only when autonomous healing is enabled and dry-run is explicitly off, same rule as the loop.
+  const healLive = rtCfg.autonomous_enabled === true && rtCfg.autonomous_dry_run === false
   const K8S = await resolveK8sUrl()
   if (K8S) {
     for (const pod of crashLoops.slice(0, 2)) {
@@ -353,6 +383,10 @@ export async function GET() {
       const lastHeal = depData?.metadata?.annotations?.['vynops.ai/last-auto-heal']
       if (lastHeal && Date.now() - new Date(lastHeal).getTime() < 30 * 60 * 1000) continue // 30-min cooldown
 
+      const healKey = `${podNs}/${depRef.name}`
+      if (!healLive) { autoHealSkipped.push(healKey); continue }
+      if (recentHeals(healKey) >= HEAL_MAX_PER_24H) { healExhausted.push(healKey); continue }
+
       try {
         const r = await fetch(`${K8S}/apis/apps/v1/namespaces/${podNs}/deployments/${depRef.name}`, {
           method: 'PATCH',
@@ -363,16 +397,22 @@ export async function GET() {
           }),
           signal: AbortSignal.timeout(K8S_TIMEOUT_MS),
         })
+        if (r.ok) recordHeal(healKey, restarts)
         if (r.ok) autoHealed.push({ action: 'restart_deployment', namespace: podNs, deployment: depRef.name, pod: pod.metadata.name, reason: `${restarts} restarts in CrashLoopBackOff ? auto-healed`, ts: new Date().toISOString() })
       } catch { /* ignore ? non-critical path */ }
     }
   }
 
   // ?? Slack + PagerDuty notifications (dedup + routing + delivery log) ???
-  const rtCfg   = readRuntimeConfig()
   const on      = rtCfg.notify_on ?? {}
   const cooldownMs = (rtCfg.notify_cooldown_minutes ?? 30) * 60_000
   const routing    = rtCfg.alert_routing ?? { critical: ['pagerduty', 'slack'], warning: ['slack'], info: ['slack'] }
+
+  const slackUrl = rtCfg.slack_webhook_url || SLACK
+  const teamsUrl = rtCfg.teams_webhook_url || process.env.TEAMS_WEBHOOK_URL || ''
+  const chanOn   = (c: string) => rtCfg.integrations_enabled?.[c] !== false
+  // Incidents already notify for critical Prometheus alerts; skip the health-score duplicate while one is open.
+  const openCriticalIncident = [...manualStore.values()].some(i => i.state !== 'resolved' && i.severity === 'critical')
 
   const fire = async (
     eventKey:  string,
@@ -383,13 +423,28 @@ export async function GET() {
   ) => {
     const channels = routing[severity] ?? routing['warning'] ?? ['slack']
     const fired: string[] = []
+    let ok = true
     try {
-      if (channels.includes('slack'))     { await slackNotify(slackText, fields); fired.push('slack') }
-      if (channels.includes('pagerduty')) { await pdNotify(pdSummary, severity);  fired.push('pagerduty') }
-      appendNotifLog({ ts: new Date().toISOString(), event: eventKey, channels: fired, summary: pdSummary, ok: true })
+      if (channels.includes('slack') && chanOn('slack'))         { await slackNotify(slackUrl, slackText, fields); fired.push('slack') }
+      if (channels.includes('pagerduty') && chanOn('pagerduty')) { await pdNotify(pdSummary, severity);  fired.push('pagerduty') }
+      if (channels.includes('teams') && chanOn('teams') && teamsUrl.startsWith('https://')) {
+        const detail = [pdSummary, ...(fields ?? []).map(f => `${f.title}: ${f.value}`)].join('\n')
+        const r = await fetch(teamsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(teamsPayload(`VynOps - ${eventKey.replace(/_/g, ' ')} (${severity})`, detail)), signal: AbortSignal.timeout(K8S_TIMEOUT_MS) })
+        if (r.ok) fired.push('teams'); else ok = false
+      }
+      appendNotifLog({ ts: new Date().toISOString(), event: eventKey, channels: fired, summary: pdSummary, ok })
     } catch {
       appendNotifLog({ ts: new Date().toISOString(), event: eventKey, channels: fired, summary: pdSummary, ok: false })
     }
+  }
+
+  for (const key of healExhausted) {
+    if (!shouldFire(`heal_exhausted:${key}`, 6 * 3600_000)) continue
+    await fire('auto_heal_exhausted', 'critical',
+      `*VynOps - auto-restart limit reached for ${key}*`,
+      `VynOps restarted ${key} ${HEAL_MAX_PER_24H} times in 24h without recovery. Manual investigation needed.`,
+      [{ title: 'Workload', value: key }],
+    )
   }
 
   // Auto-heal ? always fires, no cooldown suppression
@@ -401,7 +456,7 @@ export async function GET() {
     )
   }
 
-  if (on.critical_incidents !== false && cluster.healthScore < 60 && realCritical.length > 0
+  if (on.critical_incidents !== false && cluster.healthScore < 60 && realCritical.length > 0 && !openCriticalIncident
       && shouldFire('critical_incidents', cooldownMs)) {
     await fire('critical_incidents', 'critical',
       `?? *VynOps ? Critical Incidents ? Health ${cluster.healthScore}/100*`,
@@ -448,7 +503,7 @@ export async function GET() {
     )
   }
 
-  if (on.sla_breaches !== false && cluster.healthScore >= 60 && cluster.healthScore < 70 && counts.critical > 0
+  if (on.sla_breaches !== false && cluster.healthScore >= 60 && cluster.healthScore < 70 && counts.critical > 0 && !openCriticalIncident
       && shouldFire('sla_breaches', cooldownMs)) {
     await fire('sla_breaches', 'warning',
       `?? *VynOps ? SLA at Risk ? Health ${cluster.healthScore}/100*`,
@@ -457,5 +512,5 @@ export async function GET() {
     )
   }
 
-  return NextResponse.json({ insights: insights.slice(0, 12), cluster, counts, autoHealed })
+  return NextResponse.json({ insights: insights.slice(0, 12), cluster, counts, autoHealed, autoHealSkipped, healExhausted })
 }

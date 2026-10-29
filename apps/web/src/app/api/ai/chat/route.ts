@@ -5,13 +5,13 @@ import { createOpenAI } from '@ai-sdk/openai'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { z } from 'zod'
-import { appendFileSync, mkdirSync, existsSync, readFileSync } from 'fs'
+import { mkdirSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { auth } from '@/lib/auth'
 import { createRateLimiter } from '@/lib/rate-limit'
+import { getAIUsageFailure, recordAIUsage } from '@/lib/ai-usage'
 import { resolveK8sUrl, resolvePromUrl, resolveAlertmanagerUrl, resolveClusterMeta, K8S_TIMEOUT_MS } from '@/lib/cluster'
 
-const USAGE_FILE  = join(process.cwd(), 'data', 'ai-usage.jsonl')
 const DATA_DIR    = join(process.cwd(), 'data')
 const CONFIG_FILE = join(process.cwd(), 'config.runtime.json')
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true })
@@ -76,7 +76,7 @@ async function apiGet(path: string) {
 }
 
 // ── Provider selection: runtime settings override environment variables ─
-function getModel(): any {
+function getModel(used?: { provider: string; model: string }): any {
   let provider = process.env.AI_PROVIDER ?? 'groq'
   let apiKey = process.env.AI_API_KEY ?? process.env.GROQ_API_KEY ?? ''
   let model = process.env.AI_MODEL ?? process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL
@@ -93,6 +93,7 @@ function getModel(): any {
     }
   } catch {}
   if (provider === 'groq' && RETIRED_GROQ_MODELS.has(model)) model = GROQ_DEFAULT_MODEL
+  if (used) { used.provider = provider; used.model = model }
   if (provider === 'google') return createGoogleGenerativeAI({ apiKey })(model)
   if (provider === 'anthropic') return createAnthropic({ apiKey })(model)
   const openai = createOpenAI({ apiKey, baseURL: baseUrl || (provider === 'groq' ? 'https://api.groq.com/openai/v1' : undefined) })
@@ -980,28 +981,40 @@ export async function POST(req: Request) {
     ) as typeof tools
 
     const systemPrompt = await buildSystemPrompt()
+    const used = { provider: '', model: '' }
+    const startedAt = Date.now()
+    let stepStartedAt = startedAt
+    let failureRecorded = false
+    const recordFailure = (error: unknown) => {
+      if (failureRecorded) return
+      failureRecorded = true
+      recordAIUsage({
+        source: 'copilot',
+        provider: used.provider,
+        model: used.model,
+        durationMs: Date.now() - startedAt,
+        ...getAIUsageFailure(error),
+      })
+    }
     const result = streamText({
-      model: getModel() as any,
+      model: getModel(used) as any,
       system: systemPrompt,
       messages: trimmedMessages,
       tools: safeTools, maxSteps: 5, maxRetries: 0, temperature: 0.1, maxTokens: 1500,
-      onFinish: ({ usage }) => {
-        try {
-          const entry = {
-            ts:               new Date().toISOString(),
-            model:            process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL,
-            promptTokens:     usage.promptTokens,
-            completionTokens: usage.completionTokens,
-            totalTokens:      usage.totalTokens,
-          }
-          appendFileSync(USAGE_FILE, JSON.stringify(entry) + '\n')
-          // Trim to last 2000 entries
-          try {
-            const lines = require('fs').readFileSync(USAGE_FILE, 'utf8').split('\n').filter(Boolean)
-            if (lines.length > 2000) require('fs').writeFileSync(USAGE_FILE, lines.slice(-2000).join('\n') + '\n')
-          } catch {}
-        } catch {}
+      onStepFinish: ({ usage }) => {
+        recordAIUsage({
+          source: 'copilot',
+          provider: used.provider,
+          model: used.model,
+          status: 'success',
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          durationMs: Date.now() - stepStartedAt,
+        })
+        stepStartedAt = Date.now()
       },
+      onError: ({ error }) => recordFailure(error),
     })
     const response = result.toDataStreamResponse({
       headers: {
@@ -1009,7 +1022,10 @@ export async function POST(req: Request) {
         'Content-Encoding': 'none',
         'X-Accel-Buffering': 'no',
       },
-      getErrorMessage: getAIErrorMessage,
+      getErrorMessage: error => {
+        recordFailure(error)
+        return getAIErrorMessage(error)
+      },
     })
     if (!response.body) return response
 
@@ -1022,6 +1038,7 @@ export async function POST(req: Request) {
           if (chunk.done) controller.close()
           else controller.enqueue(chunk.value)
         } catch (error) {
+          recordFailure(error)
           console.error('[ai/chat] stream error:', getAIErrorMessage(error))
           controller.enqueue(encoder.encode(`3:${JSON.stringify(getAIErrorMessage(error))}\n`))
           controller.close()

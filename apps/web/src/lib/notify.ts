@@ -12,6 +12,7 @@ export interface NotifyIncidentPayload {
   service:  string
   state:    string
   url?:     string
+  detail?:  string   // e.g. which workloads the incident's alerts point at
 }
 
 const SEV_EMOJI: Record<string, string> = {
@@ -19,6 +20,28 @@ const SEV_EMOJI: Record<string, string> = {
   high:     '🟠',
   medium:   '🟡',
   low:      '🔵',
+}
+
+/** Teams Workflows webhook body: Adaptive Card in attachments, plus plain `text` for text-only flows. */
+export function teamsPayload(title: string, detail: string, url?: string) {
+  return {
+    type: 'message',
+    text: `${title}\n${detail}${url ? `\n${url}` : ''}`,
+    attachments: [{
+      contentType: 'application/vnd.microsoft.card.adaptive',
+      contentUrl: null,
+      content: {
+        $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+        type: 'AdaptiveCard',
+        version: '1.4',
+        body: [
+          { type: 'TextBlock', text: title, weight: 'Bolder', wrap: true },
+          { type: 'TextBlock', text: detail, wrap: true },
+        ],
+        ...(url ? { actions: [{ type: 'Action.OpenUrl', title: 'View incident', url }] } : {}),
+      },
+    }],
+  }
 }
 
 export interface NotifyDelivery {
@@ -41,6 +64,11 @@ async function deliver(url: string, body: unknown, channel: string, attempts: { 
   return false
 }
 
+/** Human label for an event key, e.g. incident.sla_breached -> "Incident sla breached". */
+function eventLabel(event: string): string {
+  return event.replace(/^incident\./, 'Incident ').replace(/[._]/g, ' ')
+}
+
 /**
  * Dispatch an incident notification to all configured channels.
  * Respects per-severity `notify_on` settings and records delivery attempts.
@@ -59,12 +87,12 @@ export async function notifyIncident(incident: NotifyIncidentPayload, event = 'i
       return { ok: true, channels: [], status: 'disabled' }
     }
 
-    const routing = cfg.alert_routing?.[sev] ?? cfg.alert_routing?.[`${sev}_incidents`]
+    const routing = cfg.alert_routing?.[sev] ?? cfg.alert_routing?.[`${sev}_incidents`] ?? (sev === 'medium' ? cfg.alert_routing?.warning : undefined)
     const enabled = (channel: string) => cfg.integrations_enabled?.[channel] !== false && (!routing || routing.includes(channel))
     const configured: string[] = []
     const emoji = SEV_EMOJI[sev] ?? '⚪'
-    const headerText = `${emoji} VynOps — ${sev.toUpperCase()} ${event.replace('incident.', 'Incident ')}`
-    const bodyText   = `*${incident.title}*`
+    const headerText = `${emoji} VynOps — ${sev.toUpperCase()} ${eventLabel(event)}`
+    const bodyText   = `*${incident.title}*${incident.detail ? `\n${incident.detail}` : ''}`
 
     // ── Slack ────────────────────────────────────────────────
     const slackUrl = cfg.slack_webhook_url || process.env.SLACK_WEBHOOK_URL || ''
@@ -101,9 +129,7 @@ export async function notifyIncident(incident: NotifyIncidentPayload, event = 'i
     const teamsUrl = cfg.teams_webhook_url || process.env.TEAMS_WEBHOOK_URL || ''
     if (enabled('teams') && teamsUrl.startsWith('https://')) {
       configured.push('teams')
-      if (!channels.includes('teams') && await deliver(teamsUrl, {
-        type: 'message', attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', content: { type: 'AdaptiveCard', version: '1.2', body: [{ type: 'TextBlock', text: headerText, weight: 'Bolder', wrap: true }, { type: 'TextBlock', text: `${incident.title}\n${incident.id} | ${incident.service} | ${incident.state}`, wrap: true }], ...(incident.url ? { actions: [{ type: 'Action.OpenUrl', title: 'View incident', url: incident.url }] } : {}) } }],
-      }, 'teams', attempts)) channels.push('teams')
+      if (!channels.includes('teams') && await deliver(teamsUrl, teamsPayload(headerText, `${incident.title}\n${incident.id} | ${incident.service} | ${incident.state}${incident.detail ? `\nAffected: ${incident.detail}` : ''}`, incident.url), 'teams', attempts)) channels.push('teams')
     }
 
     // ── Generic webhook ──────────────────────────────────────
@@ -142,6 +168,7 @@ export interface NotifyEscalationPayload {
   incidentTitle: string
   severity:      string
   service:       string
+  affected?:     string
   levelDesc:     string
   nextLevel:     number
   contactName:   string
@@ -161,7 +188,12 @@ export async function notifyEscalation(payload: NotifyEscalationPayload): Promis
   try {
     const cfg      = readConfig()
     const slackUrl = cfg.slack_webhook_url || process.env.SLACK_WEBHOOK_URL || ''
-    if (!slackUrl.startsWith('https://hooks.slack.com/') || cfg.integrations_enabled?.slack === false) {
+    const slackAvailable = slackUrl.startsWith('https://hooks.slack.com/') && cfg.integrations_enabled?.slack !== false
+    const sev      = payload.severity
+    const routing  = cfg.alert_routing?.[sev] ?? cfg.alert_routing?.[`${sev}_incidents`] ?? (sev === 'medium' ? cfg.alert_routing?.warning : undefined)
+    const teamsUrl = cfg.teams_webhook_url || process.env.TEAMS_WEBHOOK_URL || ''
+    const teamsAvailable = teamsUrl.startsWith('https://') && cfg.integrations_enabled?.teams !== false && (!routing || routing.includes('teams'))
+    if (!slackAvailable && !teamsAvailable) {
       appendNotifLog({ ts: new Date().toISOString(), event: 'incident.escalated', incidentId: payload.incidentId, channels: [], summary: 'Escalation channel unavailable', ok: false, status: 'unconfigured' })
       return false
     }
@@ -172,7 +204,8 @@ export async function notifyEscalation(payload: NotifyEscalationPayload): Promis
       : payload.contactName
     const levelTag = `*L${payload.nextLevel} — ${payload.levelDesc}*`
 
-    const ok = await deliver(slackUrl, {
+    let slackOk = false
+    if (slackAvailable) slackOk = await deliver(slackUrl, {
         blocks: [
           {
             type: 'header',
@@ -194,6 +227,7 @@ export async function notifyEscalation(payload: NotifyEscalationPayload): Promis
               { type: 'mrkdwn', text: `*Email*\n${payload.contactEmail}` },
               { type: 'mrkdwn', text: `*Platform*\nVynOps` },
               { type: 'mrkdwn', text: `*Time*\n<!date^${Math.floor(Date.now()/1000)}^{date_short_pretty} at {time}|${new Date().toISOString()}>` },
+              ...(payload.affected       ? [{ type: 'mrkdwn', text: `*Affected*\n${payload.affected}` }]       : []),
               ...(payload.slaInfo        ? [{ type: 'mrkdwn', text: `*SLA Status*\n${payload.slaInfo}` }]       : []),
               ...(payload.autoTriggered  ? [{ type: 'mrkdwn', text: `*Triggered by*\nVynOps Auto-escalation` }] : []),
             ],
@@ -204,10 +238,17 @@ export async function notifyEscalation(payload: NotifyEscalationPayload): Promis
           { type: 'divider' },
         ],
       }, 'slack', attempts)
+    const channelsOk: string[] = slackOk ? ['slack'] : []
+    if (teamsAvailable && await deliver(teamsUrl, teamsPayload(
+      `VynOps Escalation - L${payload.nextLevel} ${payload.levelDesc}`,
+      `${payload.contactName} (${payload.contactEmail}) is asked to act on ${payload.incidentTitle}\n${payload.incidentId} | ${payload.service}${payload.affected ? `\nAffected: ${payload.affected}` : ''}${payload.slaInfo ? `\n${payload.slaInfo}` : ''}`,
+      payload.url,
+    ), 'teams', attempts)) channelsOk.push('teams')
+    const ok = channelsOk.length > 0
     appendNotifLog({
       ts:      new Date().toISOString(),
       event:   'incident.escalated',
-      channels: ok ? ['slack'] : [],
+      channels: channelsOk,
       summary: `Escalation L${payload.nextLevel} for ${payload.incidentId} → ${payload.contactName}`,
       ok,
       incidentId: payload.incidentId,

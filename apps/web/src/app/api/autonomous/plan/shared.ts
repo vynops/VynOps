@@ -1,13 +1,8 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from 'fs'
-import { randomBytes } from 'crypto'
 import { join } from 'path'
 
 const DATA_DIR   = join(process.cwd(), 'data')
 const PLANS_FILE = join(DATA_DIR, 'autonomous.plans.jsonl')
-
-// Shared secret for server-to-server auto-approve calls.
-export const INTERNAL_PLAN_SECRET: string =
-  process.env.AUTONOMOUS_INTERNAL_SECRET ?? randomBytes(32).toString('hex')
 
 // Action vocabulary used by both plan generation and execution.
 export const ACTION_VOCAB: Record<string, { description: string; requiresTarget: boolean; risk: 'low' | 'medium' | 'high' }> = {
@@ -32,6 +27,32 @@ export interface PlanStep {
   replicas?:  number
 }
 
+export type AutoRisk = 'low' | 'medium' | 'high'
+const RISK_RANK: Record<AutoRisk, number> = { low: 0, medium: 1, high: 2 }
+
+/** True when any step is riskier than `max`; unknown actions count as high. */
+export function exceedsAutoRisk(steps: { action: string }[], max: AutoRisk = 'low'): boolean {
+  return steps.some(s => RISK_RANK[ACTION_VOCAB[s.action]?.risk ?? 'high'] > (RISK_RANK[max] ?? 0))
+}
+
+// Kept in step with ai/chat/route.ts and settings/config/route.ts.
+const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-120b'
+const RETIRED_GROQ_MODELS = new Set(['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768', 'gemma2-9b-it'])
+
+/** Saved settings win over env; a retired Groq model is replaced by the current default. */
+export function resolvePlanModel(
+  cfg: { ai_model?: string; groq_model?: string },
+  provider: string,
+  env: Record<string, string | undefined>,
+): string {
+  const model = cfg.ai_model
+    ?? (provider === 'groq' ? cfg.groq_model : undefined)
+    ?? env.AI_MODEL
+    ?? (provider === 'groq' ? env.GROQ_MODEL : undefined)
+    ?? GROQ_DEFAULT_MODEL
+  return provider === 'groq' && RETIRED_GROQ_MODELS.has(model) ? GROQ_DEFAULT_MODEL : model
+}
+
 export interface RemediationPlan {
   id:            string
   incidentId:    string
@@ -45,6 +66,8 @@ export interface RemediationPlan {
   status:        'pending' | 'approved' | 'dismissed' | 'executing' | 'done' | 'failed'
   executedAt?:   string
   approvedBy?:   string
+  notifiedAt?:     string   // when operators were told the plan awaits approval
+  reminderSentAt?: string
   results?:      { step: string; ok: boolean; output: string }[]
   namespace:     string
 }

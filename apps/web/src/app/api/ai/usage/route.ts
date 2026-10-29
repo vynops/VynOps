@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { auth } from '@/lib/auth'
+import { summarizeAIUsage, summarizeAIUsageBySource } from '@/lib/ai-usage'
 
 const USAGE_FILE = join(process.cwd(), 'data', 'ai-usage.jsonl')
 
@@ -21,25 +22,19 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const limit = Math.min(parseInt(searchParams.get('limit') ?? '500'), 1000)
 
-  const entries = readEntries().reverse().slice(0, limit)
-
-  // Aggregate totals
   const allEntries = readEntries()
+  const entries = allEntries.slice().reverse().slice(0, limit)
   const todayStr   = new Date().toISOString().slice(0, 10)
   const todayEntries = allEntries.filter((e: any) => e.ts?.startsWith(todayStr))
 
   const totals = {
     allTime: {
-      requests:         allEntries.length,
-      promptTokens:     allEntries.reduce((s: number, e: any) => s + (e.promptTokens ?? 0), 0),
-      completionTokens: allEntries.reduce((s: number, e: any) => s + (e.completionTokens ?? 0), 0),
-      totalTokens:      allEntries.reduce((s: number, e: any) => s + (e.totalTokens ?? 0), 0),
+      ...summarizeAIUsage(allEntries),
+      bySource: summarizeAIUsageBySource(allEntries),
     },
     today: {
-      requests:         todayEntries.length,
-      promptTokens:     todayEntries.reduce((s: number, e: any) => s + (e.promptTokens ?? 0), 0),
-      completionTokens: todayEntries.reduce((s: number, e: any) => s + (e.completionTokens ?? 0), 0),
-      totalTokens:      todayEntries.reduce((s: number, e: any) => s + (e.totalTokens ?? 0), 0),
+      ...summarizeAIUsage(todayEntries),
+      bySource: summarizeAIUsageBySource(todayEntries),
     },
   }
 

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { resolveK8sUrl, resolvePromUrl } from '@/lib/cluster'
-import { assertOperator } from '@/lib/rbac'
+import { assertOperator, getSessionUserId } from '@/lib/rbac'
+import { appendAuditLog } from '@/app/api/settings/config/shared'
 
 
 export async function POST(
@@ -35,6 +36,12 @@ export async function POST(
       const msg = await res.text()
       return NextResponse.json({ error: msg || `K8s returned ${res.status}` }, { status: res.status })
     }
+    appendAuditLog({
+      ts: new Date().toISOString(),
+      user: (await getSessionUserId()) ?? 'authenticated-user',
+      action: 'deployment.restart',
+      detail: `${namespace}/${name}`,
+    })
     return NextResponse.json({ ok: true, message: `Rollout restart triggered for ${name}` })
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 502 })

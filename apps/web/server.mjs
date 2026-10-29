@@ -145,6 +145,7 @@ app.prepare().then(() => {
         .then(r => r.json())
         .then(d => {
           if (d.skipped) return // autonomous disabled — silent
+          if (d.ok === false) return console.error(`[cron] autonomous loop failed: ${d.error ?? 'unknown'}`)
           console.log(
             `[cron] autonomous loop — ok:${d.actionsOk ?? 0}` +
             ` dry:${d.actionsDryRun ?? 0}` +

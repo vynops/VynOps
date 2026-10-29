@@ -3,6 +3,7 @@ import { NextResponse }                        from 'next/server'
 import { auth }                                from '@/lib/auth'
 import net                                      from 'net'
 import { readConfig, writeConfig, appendAuditLog } from '../config/shared'
+import { teamsPayload }                            from '@/lib/notify'
 
 // Record a successful test to config.last_tested
 function recordTestResult(action: string, ok: boolean, msg: string) {
@@ -87,17 +88,7 @@ export async function POST(req: Request) {
       const r = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          '@type': 'MessageCard',
-          '@context': 'http://schema.org/extensions',
-          summary: 'VynOps Teams connection verified',
-          themeColor: '22c55e',
-          title: 'VynOps — Microsoft Teams connection verified',
-          sections: [{ facts: [
-            { name: 'Status', value: 'Connected' },
-            { name: 'Source', value: 'VynOps Settings page test' },
-          ] }],
-        }),
+        body: JSON.stringify(teamsPayload('VynOps - Microsoft Teams connection verified', 'Status: Connected\nSource: VynOps Settings page test')),
         signal: AbortSignal.timeout(K8S_TIMEOUT_MS),
       })
       const latencyMs = Date.now() - t0

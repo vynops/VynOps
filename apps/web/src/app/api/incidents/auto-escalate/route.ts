@@ -1,5 +1,5 @@
 import { NextResponse }                                  from 'next/server'
-import { manualStore, buildAutoIncidents, persistStore, escalationLocks } from '@/app/api/incidents/shared'
+import { manualStore, buildAutoIncidents, persistStore, escalationLocks, escalationClockStart, affectedSummary } from '@/app/api/incidents/shared'
 import type { IncidentDoc }                              from '@/app/api/incidents/shared'
 import { readFileSync, existsSync }                      from 'fs'
 import { join }                                          from 'path'
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
     if (escalationLocks.has(inc.id)) continue
     escalationLocks.add(inc.id)
     try {
-    const elapsedMins  = (now - new Date(inc.createdAt).getTime()) / 60000
+    const elapsedMins  = (now - escalationClockStart(inc)) / 60000
     const currentLevel = inc.escalationLevel ?? 0
 
     // Find the next level that should fire by now
@@ -118,6 +118,7 @@ export async function POST(req: Request) {
       incidentTitle: inc.title,
       severity:      inc.severity,
       service:       inc.service,
+      affected:      affectedSummary(inc),
       levelDesc,
       nextLevel,
       contactName:   contact.name,
