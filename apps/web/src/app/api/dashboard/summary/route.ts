@@ -90,7 +90,8 @@ export async function GET(req: Request) {
     n.status?.conditions?.find((c: any) => c.type === 'Ready')?.status === 'True'
   ).length
 
-  const workloadPods = pods.filter(p => !SKIP_NS.has(p.metadata?.namespace ?? ''))
+  // Succeeded pods are finished Job runs, not unhealthy workloads.
+  const workloadPods = pods.filter(p => !SKIP_NS.has(p.metadata?.namespace ?? '') && p.status?.phase !== 'Succeeded')
   const runningPods  = workloadPods.filter(p => p.status?.phase === 'Running').length
   const crashPods    = workloadPods.filter(p =>
     p.status?.containerStatuses?.some((c: any) => c.state?.waiting?.reason === 'CrashLoopBackOff')

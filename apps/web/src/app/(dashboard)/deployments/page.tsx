@@ -54,6 +54,7 @@ const BAND_COLOR: Record<string, string> = {
   high:   'text-brand-400',
   medium: 'text-warning',
   low:    'text-danger',
+  'no-data': 'text-surface-400',
 }
 
 function statusIcon(status: DeploymentEvent['status'], size = 'w-4 h-4') {
@@ -406,15 +407,17 @@ function DeployDetail({ dep, onViewLogs, onDescribe, onViewYaml, onViewTraces }:
 
 type DoraMetrics = {
   deployFrequency7d: number; deployFrequency30d: number
-  changeFailureRate: number; successRate: number
+  changeFailureRate: number | null; successRate: number | null
+  ratedDeploys30d: number; failedDeploys30d: number
   totalDeploys: number; serviceCount: number; inProgress: number
   frequencyBand: string; cfrBand: string
 }
 
 const EMPTY_DORA: DoraMetrics = {
-  deployFrequency7d: 0, deployFrequency30d: 0, changeFailureRate: 0,
-  successRate: 0, totalDeploys: 0, serviceCount: 0, inProgress: 0,
-  frequencyBand: 'low', cfrBand: 'elite',
+  deployFrequency7d: 0, deployFrequency30d: 0, changeFailureRate: null,
+  successRate: null, ratedDeploys30d: 0, failedDeploys30d: 0,
+  totalDeploys: 0, serviceCount: 0, inProgress: 0,
+  frequencyBand: 'no-data', cfrBand: 'no-data',
 }
 
 export default function DeploymentsPage() {
@@ -470,8 +473,8 @@ export default function DeploymentsPage() {
   ]
 
   // -- DORA band tooltip labels ------------------------------------------------
-  const freqLabel = { elite: '=1/day (Elite)', high: '1-6/week (High)', medium: '1-4/month (Medium)', low: '<1/month (Low)' }
-  const cfrLabel  = { elite: '<5% (Elite)', high: '5-15% (High)', medium: '15-30% (Medium)', low: '>30% (Low)' }
+  const freqLabel = { elite: '=1/day (Elite)', high: '1-6/week (High)', medium: '1-4/month (Medium)', low: '<1/month (Low)', 'no-data': 'No revisions in the last 30 days' }
+  const cfrLabel  = { elite: '<5% (Elite)', high: '5-15% (High)', medium: '15-30% (Medium)', low: '>30% (Low)', 'no-data': 'No completed deployments in the last 30 days' }
 
   return (
     <div className="flex flex-col h-full">
@@ -529,14 +532,14 @@ export default function DeploymentsPage() {
           },
           {
             label: 'Success Rate',
-            value: `${dora.successRate}%`,
-            sub:   `${dora.totalDeploys} total · ${failedCount} failed`,
+            value: dora.successRate === null ? 'N/A' : `${dora.successRate}%`,
+            sub:   `${dora.ratedDeploys30d} completed in 30d · ${dora.failedDeploys30d} failed`,
             icon: <CheckCircle2 className="w-7 h-7" />,
-            color: dora.successRate >= 95 ? 'text-success' : dora.successRate >= 80 ? 'text-warning' : 'text-danger',
+            color: dora.successRate === null ? 'text-surface-400' : dora.successRate >= 95 ? 'text-success' : dora.successRate >= 80 ? 'text-warning' : 'text-danger',
           },
           {
             label: 'Change Failure Rate',
-            value: `${dora.changeFailureRate}%`,
+            value: dora.changeFailureRate === null ? 'N/A' : `${dora.changeFailureRate}%`,
             sub:   (cfrLabel as any)[dora.cfrBand] ?? dora.cfrBand,
             icon: <AlertTriangle className="w-7 h-7" />,
             color: BAND_COLOR[dora.cfrBand] ?? 'text-surface-400',

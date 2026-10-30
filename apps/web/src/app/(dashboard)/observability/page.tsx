@@ -351,7 +351,7 @@ function ObservabilityInner() {
     summary: r.summary ?? { total: 0, warnings: 0, highRepeat: 0, recentWarnings15m: 0, anomalyBursts: 0 },
   }))
   const { data: podsData, isLive: podsLive, error: podsError, loading: podsLoading } = useLiveData('/api/k8s/pods', { pods: [] as any[], podsByNode: {} as Record<string, any[]> }, (r) => ({ pods: r.pods ?? [], podsByNode: r.podsByNode ?? {} }))
-  const { data: tracesData } = useLiveData(
+  const { data: tracesData, refresh: refreshTraces } = useLiveData(
     `/api/observability/traces?lookback=${traceLookback}${traceService ? `&service=${encodeURIComponent(traceService)}` : ''}${traceMinDur ? `&minDuration=${encodeURIComponent(traceMinDur)}` : ''}${/^[0-9a-f]{32}$/.test(traceSearch) ? `&traceId=${traceSearch}` : ''}`,
     { traces: [] as Trace[], total: 0, jaegerAvailable: false, services: [] as string[] },
     (r) => ({ traces: (r.traces ?? []) as Trace[], total: r.total ?? 0, jaegerAvailable: r.jaegerAvailable ?? false, services: (r.services ?? []) as string[] }),
@@ -713,15 +713,7 @@ function ObservabilityInner() {
           <p className="text-xs text-surface-500 mt-0.5">Unified metrics, logs, traces &amp; events</p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-surface-500" />
-            <input
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search services, metrics..."
-              className="w-52 bg-surface-800 border border-surface-700 rounded-xl pl-8 pr-3 py-1.5 text-sm text-white placeholder-surface-500 outline-none focus:border-brand-500"
-            />
-          </div>
+          {activeTab === 'Metrics' && <>
           <div className="relative">
             <button
               onClick={() => setFilterOpen(o => !o)}
@@ -744,11 +736,18 @@ function ObservabilityInner() {
               </div>
             )}
           </div>
+          </>}
           <button
+            title={`Refresh ${activeTab.toLowerCase()}`}
             onClick={() => {
               switch (activeTab) {
                 case 'Metrics': refreshMetrics(); break
                 case 'Events':  refreshEvents();  break
+                case 'Traces':  refreshTraces();  break
+                case 'Logs':
+                  if (lokiQuery.trim()) fetchLokiLogs()
+                  if (logNs && logPod) fetchPodLogs()
+                  break
                 default: break
               }
             }}

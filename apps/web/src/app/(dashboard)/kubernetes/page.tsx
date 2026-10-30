@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { Boxes, Search, RefreshCw, Activity, Shield, Server, Network, CheckCircle2, Download,
   ChevronDown, ChevronRight, X, Box, Cpu, MemoryStick, Plug, FolderOpen, Eye, EyeOff,
   TerminalSquare, FileCode2, Trash2, RotateCcw, Minus, Plus, Lock, Globe, Layers, GitBranch, ScrollText, FileSearch, Wifi,
-  AlertTriangle, Loader2, Zap } from 'lucide-react'
+  AlertTriangle, Loader2, Zap, Copy } from 'lucide-react'
 import { exportCSV } from '@/lib/utils'
 import { useDashboardStore, getClusterHeaders } from '@/store'
 import { useLiveData } from '@/hooks/useLiveData'
@@ -363,6 +363,137 @@ function LiveDot({ live }: { live: boolean }) {
   return <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75" /><span className="relative inline-flex rounded-full h-2 w-2 bg-success" /></span>
 }
 
+const CLI_COMMANDS = [
+  { id: 'cluster-info', label: 'Cluster info', args: 'cluster-info', namespace: false },
+  { id: 'nodes', label: 'Nodes', args: 'get nodes -o wide', namespace: false },
+  { id: 'namespaces', label: 'Namespaces', args: 'get namespaces', namespace: false },
+  { id: 'deployments', label: 'Deployments', args: 'get deployments -o wide', namespace: true },
+  { id: 'pods', label: 'Pods', args: 'get pods -o wide', namespace: true },
+  { id: 'services', label: 'Services', args: 'get services -o wide', namespace: true },
+  { id: 'events', label: 'Recent events', args: 'get events --sort-by=.metadata.creationTimestamp', namespace: true },
+  { id: 'top-nodes', label: 'Node usage', args: 'top nodes', namespace: false },
+] as const
+
+function ClusterCliModal({ cluster, context, onContextChange, onClose }: {
+  cluster: K8sCluster; context: string; onContextChange: (value: string) => void; onClose: () => void
+}) {
+  const [commandId, setCommandId] = useState<string>('nodes')
+  const [namespace, setNamespace] = useState('')
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+  const [running, setRunning] = useState(false)
+  const [runOutput, setRunOutput] = useState('')
+  const [runError, setRunError] = useState('')
+  const selected = CLI_COMMANDS.find(command => command.id === commandId) ?? CLI_COMMANDS[1]
+  const safeContext = /^[A-Za-z0-9._/@:-]+$/.test(context.trim())
+  const safeNamespace = !namespace || /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(namespace)
+  const scope = selected.namespace ? (namespace ? `-n ${namespace}` : '-A') : ''
+  const command = safeContext && safeNamespace
+    ? `kubectl --context=${context.trim()} ${selected.args}${scope ? ` ${scope}` : ''}`
+    : ''
+
+  const copyCommand = async () => {
+    if (!command) return
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopyState('copied')
+      window.setTimeout(() => setCopyState('idle'), 1800)
+    } catch { setCopyState('error') }
+  }
+
+  const runCommand = async () => {
+    setRunning(true)
+    setRunError('')
+    setRunOutput('')
+    try {
+      const response = await fetch('/api/k8s/cli', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clusterId: cluster.id, commandId, namespace }),
+      })
+      const data = await response.json()
+      if (!response.ok) setRunError(data.error ?? `Command failed (${response.status})`)
+      else setRunOutput(data.output ?? '')
+    } catch { setRunError('Could not reach VynOps. Check your connection and try again.') }
+    finally { setRunning(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="cluster-cli-title">
+      <button className="absolute inset-0 bg-black/70" onClick={onClose} aria-label="Close CLI workbench" />
+      <div className="relative w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-2xl border border-surface-700 bg-surface-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-surface-800 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <TerminalSquare className="h-5 w-5 text-brand-400" />
+            <div>
+              <h2 id="cluster-cli-title" className="text-sm font-bold text-white">kubectl workbench</h2>
+              <p className="mt-0.5 text-2xs text-surface-500">{cluster.name} · read-only cluster commands</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-surface-400 hover:bg-surface-800 hover:text-white" aria-label="Close">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-5 p-5">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1.5 block text-2xs font-semibold text-surface-400">Local kubeconfig context</span>
+              <input value={context} onChange={e => { onContextChange(e.target.value); setCopyState('idle') }} placeholder="e.g. eks-prod-us-east" className="w-full rounded-lg border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-white placeholder-surface-600 outline-none focus:border-brand-500" />
+              <span className="mt-1 block text-2xs text-surface-600">Used only for the copied command on your computer.</span>
+              {context && !safeContext && <span className="mt-1 block text-2xs text-warning">Use letters, numbers, dot, underscore, slash, colon, @ or hyphen.</span>}
+            </label>
+            {selected.namespace && (
+              <label className="block">
+                <span className="mb-1.5 block text-2xs font-semibold text-surface-400">Namespace <span className="font-normal text-surface-600">(optional; blank means all)</span></span>
+                <input value={namespace} onChange={e => { setNamespace(e.target.value); setRunOutput(''); setRunError('') }} placeholder="production" className="w-full rounded-lg border border-surface-700 bg-surface-950 px-3 py-2 font-mono text-xs text-white placeholder-surface-600 outline-none focus:border-brand-500" />
+                {namespace && !safeNamespace && <span className="mt-1 block text-2xs text-warning">Use a lowercase Kubernetes namespace name.</span>}
+              </label>
+            )}
+          </div>
+
+          <div>
+            <p className="mb-2 text-2xs font-semibold uppercase tracking-wide text-surface-500">Read-only commands</p>
+            <div className="flex flex-wrap gap-2">
+              {CLI_COMMANDS.map(item => (
+                <button key={item.id} onClick={() => { setCommandId(item.id); setCopyState('idle'); setRunOutput(''); setRunError('') }} aria-pressed={commandId === item.id} className={cn('rounded-lg border px-3 py-2 text-xs transition-colors', commandId === item.id ? 'border-brand-500/40 bg-brand-500/10 text-brand-300' : 'border-surface-700 text-surface-400 hover:bg-surface-800 hover:text-white')}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {commandId === 'top-nodes' && <p className="mt-2 text-2xs text-surface-500">Requires metrics-server to be available in the target cluster.</p>}
+          </div>
+
+          <div>
+            <p className="mb-2 text-2xs font-semibold uppercase tracking-wide text-surface-500">Command preview</p>
+            <div className="flex flex-col gap-3 rounded-xl border border-surface-800 bg-surface-950 p-3 sm:flex-row sm:items-center">
+              <code className="min-w-0 flex-1 break-all font-mono text-xs text-success">{command || 'Enter a valid local context name to build the command.'}</code>
+              <button onClick={copyCommand} disabled={!command} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-surface-700 px-3 py-2 text-xs font-semibold text-surface-200 hover:bg-surface-800 disabled:cursor-not-allowed disabled:opacity-40">
+                <Copy className="h-3.5 w-3.5" /> {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy command'}
+              </button>
+              <button onClick={runCommand} disabled={running || !safeNamespace} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-brand-500 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-40">
+                <TerminalSquare className="h-3.5 w-3.5" /> {running ? 'Running…' : 'Run in VynOps'}
+              </button>
+            </div>
+          </div>
+
+          {(running || runOutput || runError) && (
+            <div className="overflow-hidden rounded-xl border border-surface-800 bg-black/40">
+              <div className="border-b border-surface-800 px-3 py-2 text-2xs font-semibold uppercase tracking-wide text-surface-500">Output</div>
+              {running ? <p className="px-3 py-4 text-xs text-surface-400">Querying {cluster.name}…</p>
+                : runError ? <p className="whitespace-pre-wrap px-3 py-3 font-mono text-xs text-danger">{runError}</p>
+                  : <pre className="max-h-72 overflow-auto whitespace-pre px-3 py-3 font-mono text-xs leading-relaxed text-surface-200">{runOutput}</pre>}
+            </div>
+          )}
+
+          <div className="rounded-lg border border-surface-800 bg-surface-950/60 p-3 text-2xs leading-relaxed text-surface-500">
+            <strong className="text-surface-300">Run in VynOps</strong> queries the selected registered cluster using your signed-in session and a fixed read-only command list. <strong className="text-surface-300">Copy command</strong> uses the local context above and runs only when pasted into your terminal. No kubeconfig credentials are uploaded, and arbitrary shell commands are not accepted.
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function KubernetesInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -392,6 +523,7 @@ function KubernetesInner() {
   const [connectError, setConnectError] = useState<string | null>(null)
   const [connectForm, setConnectForm] = useState({ name: '', url: '', promUrl: '', provider: 'on-prem', region: '' })
   const [probingCluster, setProbingCluster] = useState<string | null>(null)
+  const [cliCluster, setCliCluster] = useState<K8sCluster | null>(null)
 
   // Load persisted registered clusters from server on mount
   useEffect(() => {
@@ -459,6 +591,25 @@ function KubernetesInner() {
     setProbingCluster(null)
   }, [clusters, setClusters])
   const [selectedClusterId, setSelectedClusterId] = useState<string>(activeCluster?.id ?? '')
+  const [kubeContexts, setKubeContexts] = useState<Record<string, string>>({})
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('vynops-kube-contexts') ?? '{}')
+      if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+        setKubeContexts(Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, string] => typeof entry[1] === 'string')))
+      }
+    } catch { /* ignore invalid browser-local context preferences */ }
+  }, [])
+  const saveKubeContext = useCallback((id: string, value: string) => {
+    const context = value.trim()
+    setKubeContexts(current => ({ ...current, [id]: context }))
+    try {
+      const saved = JSON.parse(localStorage.getItem('vynops-kube-contexts') ?? '{}')
+      if (context) saved[id] = context
+      else delete saved[id]
+      localStorage.setItem('vynops-kube-contexts', JSON.stringify(saved))
+    } catch { /* local browser storage is optional */ }
+  }, [])
   const [sortCol, setSortCol]           = useState<'name'|'namespace'|'status'|'node'|'restarts'|'cpu'|'mem'|'age'>('status')
   const [sortDir, setSortDir]           = useState<'asc'|'desc'>('asc')
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
@@ -1991,7 +2142,7 @@ function KubernetesInner() {
                             <div className="flex items-center gap-2">
                               <span className="font-mono text-white font-medium whitespace-nowrap">{c.name}</span>
                               {connected && <LiveDot live />}
-                              {!connected && <span className="text-2xs text-surface-600 italic">demo</span>}
+                              {!connected && <span className="text-2xs text-surface-600 italic">not selected</span>}
                             </div>
                           </td>
                           <td className="px-3 py-3">
@@ -2048,10 +2199,17 @@ function KubernetesInner() {
                             }
                           </td>
                           <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
-                            {connected
-                              ? null
-                              : (
-                                <div className="flex items-center gap-1">
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => setCliCluster(c)}
+                                title="Open kubectl workbench"
+                                aria-label={`Open kubectl workbench for ${c.name}`}
+                                className="w-6 h-6 flex items-center justify-center rounded-lg hover:bg-brand-500/10 text-surface-500 hover:text-brand-400 transition-colors"
+                              >
+                                <TerminalSquare className="w-3.5 h-3.5" />
+                              </button>
+                              {!connected && (
+                                <>
                                   <button
                                     onClick={() => handleReprobeCluster(c.id)}
                                     disabled={probingCluster === c.id}
@@ -2061,9 +2219,9 @@ function KubernetesInner() {
                                     {probingCluster === c.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
                                   </button>
                                   <button onClick={() => handleRemoveCluster(c.id)} title="Remove cluster" className="w-6 h-6 flex items-center justify-center rounded-lg hover:bg-danger/10 text-surface-500 hover:text-danger transition-colors"><Trash2 className="w-3 h-3" /></button>
-                                </div>
-                              )
-                            }
+                                </>
+                              )}
+                            </div>
                           </td>
                         </tr>
                         {/* Expanded details row */}
@@ -2083,7 +2241,7 @@ function KubernetesInner() {
                                   <p className="text-surface-500 font-semibold uppercase tracking-wider mb-1.5">Resources</p>
                                   <div className="space-y-1">
                                     <p className="text-surface-400">CPU: <span className="text-surface-200">{c.cpuUsed.toFixed(1)} / {c.cpuCapacity} cores</span></p>
-                                    <p className="text-surface-400">Mem: <span className="text-surface-200">{c.memoryUsed.toFixed(1)} / {c.memoryCapacity} GiB</span></p>
+                                    <p className="text-surface-400">Mem: <span className="text-surface-200">{c.memoryUsed.toFixed(2)} / {c.memoryCapacity.toFixed(2)} GiB</span></p>
                                     <p className="text-surface-400">Namespaces: <span className="text-surface-200">{c.namespaceCount}</span></p>
                                   </div>
                                 </div>
@@ -2182,7 +2340,7 @@ function KubernetesInner() {
                       <div key={label}>
                         <div className="flex justify-between text-2xs mb-1">
                           <span className="text-surface-500">{label}</span>
-                          <span className="text-surface-400">{used.toFixed(1)} / {total} {unit} ({Math.round(pct)}%)</span>
+                          <span className="text-surface-400">{used.toFixed(label === 'Memory' ? 2 : 1)} / {total.toFixed(label === 'Memory' ? 2 : 1)} {unit} ({Math.round(pct)}%)</span>
                         </div>
                         <div className="h-1.5 rounded-full bg-surface-800">
                           <div className={cn('h-full rounded-full transition-all', pct > 85 ? 'bg-danger' : pct > 70 ? 'bg-warning' : color)} style={{ width: `${pct}%` }} />
@@ -6005,6 +6163,14 @@ function KubernetesInner() {
           </div>
         </div>
       </div>
+    )}
+    {cliCluster && (
+      <ClusterCliModal
+        cluster={cliCluster}
+        context={kubeContexts[cliCluster.id] ?? ''}
+        onContextChange={value => saveKubeContext(cliCluster.id, value)}
+        onClose={() => setCliCluster(null)}
+      />
     )}
     {/* Register / Connect Cluster Modal */}
     {showConnectModal && (

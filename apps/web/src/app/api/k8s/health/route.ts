@@ -54,9 +54,10 @@ export async function GET() {
   const nodeScore = nodes.length > 0 ? (readyNodes / nodes.length) * 100 : 100
 
   // ── Pod health ───────────────────────────────────────────────
+  // Succeeded pods are finished Job runs, not unhealthy workloads.
   const workloadPods = pods.filter(p => {
     const ns: string = p.metadata?.namespace ?? ''
-    return !['kube-system', 'kube-public', 'kube-node-lease'].includes(ns)
+    return !['kube-system', 'kube-public', 'kube-node-lease'].includes(ns) && p.status?.phase !== 'Succeeded'
   })
   const runningPods  = workloadPods.filter(p => p.status?.phase === 'Running').length
   const failedPods   = workloadPods.filter(p =>

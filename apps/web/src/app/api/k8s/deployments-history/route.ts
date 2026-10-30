@@ -317,26 +317,31 @@ export async function GET() {
   const now30d = Date.now() - 30 * 86_400_000
   const e7d    = events.filter(e => new Date(e.startedAt).getTime() > now7d)
   const e30d   = events.filter(e => new Date(e.startedAt).getTime() > now30d)
-  // Rates ignore deployments that are deliberately scaled to 0; they neither succeeded nor failed.
-  const rated30d = e30d.filter(e => !e.scaledToZero)
+  // Rates use completed, non-zero-scale deployments; in-progress and idle services are not outcomes.
+  const rated30d = e30d.filter(e => !e.scaledToZero && e.status !== 'in-progress')
+  const failedDeploys30d = rated30d.filter(e => e.status === 'failed').length
 
   const dora = {
+    deploys7d: e7d.length,
     deployFrequency7d:  Math.round(e7d.length  / 7  * 100) / 100,   // deploys/day
     deployFrequency30d: Math.round(e30d.length / 30 * 100) / 100,
     // B7: CFR and successRate scoped to 30-day window (same as DORA spec)
-    changeFailureRate:  rated30d.length > 0
-      ? Math.round(rated30d.filter(e => e.status === 'failed').length / rated30d.length * 100) : 0,
+    changeFailureRate: rated30d.length > 0
+      ? Math.round(failedDeploys30d / rated30d.length * 100) : null,
     successRate: rated30d.length > 0
-      ? Math.round(rated30d.filter(e => e.status === 'success').length / rated30d.length * 100) : 0,
+      ? Math.round(rated30d.filter(e => e.status === 'success').length / rated30d.length * 100) : null,
+    ratedDeploys30d: rated30d.length,
+    failedDeploys30d,
     totalDeploys:   events.length,
     serviceCount:   new Set(events.map(e => e.service)).size,
     inProgress:     events.filter(e => e.status === 'in-progress').length,
     // Frequency category (per DORA research benchmarks)
-    frequencyBand: e7d.length >= 7 ? 'elite'         // ≥1/day
+    frequencyBand: e30d.length === 0 ? 'no-data'
+           : e7d.length >= 7 ? 'elite'         // ≥1/day
                  : e7d.length >= 1 ? 'high'           // 1-6/week
                  : e30d.length >= 1 ? 'medium'        // 1-4/month
                  : 'low',                             // <1/month
-    cfrBand: rated30d.length === 0 ? 'elite'
+    cfrBand: rated30d.length === 0 ? 'no-data'
            : rated30d.filter(e => e.status === 'failed').length / rated30d.length < 0.05 ? 'elite'
            : rated30d.filter(e => e.status === 'failed').length / rated30d.length < 0.15 ? 'high'
            : rated30d.filter(e => e.status === 'failed').length / rated30d.length < 0.30 ? 'medium'

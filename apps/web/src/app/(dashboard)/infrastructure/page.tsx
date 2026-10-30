@@ -692,7 +692,7 @@ function InfrastructureInner() {
     }).catch(() => null)
   }, [webhookUrl])
 
-  const { data: storageData, isLive: storageLive, loading: storageFetching } = useLiveData(
+  const { data: storageData, isLive: storageLive, loading: storageFetching, refresh: refreshStorage } = useLiveData(
     '/api/k8s/storage',
     { pvs: [] as PersistentVolume[], storageclasses: [] as StorageClass[], pvcs: [] as PersistentVolumeClaim[], orphanedPVs: [] as any[], orphanedConfigMaps: [] as any[], orphanedSecrets: [] as any[], summary: null as any },
     (r) => ({ pvs: r.pvs ?? [], storageclasses: r.storageclasses ?? [], pvcs: r.pvcs ?? [], orphanedPVs: r.orphanedPVs ?? [], orphanedConfigMaps: r.orphanedConfigMaps ?? [], orphanedSecrets: r.orphanedSecrets ?? [], summary: r.summary ?? null }),
@@ -708,7 +708,7 @@ function InfrastructureInner() {
   // Node sparklines + predictive headroom (Prometheus data, capped at 1h for readability)
   const sparkWin = Math.min(winMin, 60)
   const sparkWinLabel = sparkWin >= 60 ? '1h' : `${sparkWin}m`
-  const { data: nodeMetrics } = useLiveData(
+  const { data: nodeMetrics, refresh: refreshNodeMetrics } = useLiveData(
     `/api/k8s/nodes/metrics?window=${sparkWin}`,
     { nodes: [] as any[] },
     (r) => ({ nodes: r.nodes ?? [] }),
@@ -717,7 +717,7 @@ function InfrastructureInner() {
     (nodeMetrics.nodes ?? []).map((n: any) => [n.name, n])
   )
 
-  const { data: eventsData, isLive: eventsLive } = useLiveData(
+  const { data: eventsData, isLive: eventsLive, refresh: refreshEvents } = useLiveData(
     '/api/k8s/events',
     { events: [] as K8sEvent[], anomalies: [] as any[], correlatedGroups: [] as any[], summary: null as any },
     (r) => ({ events: r.events ?? [], anomalies: r.anomalies ?? [], correlatedGroups: r.correlatedGroups ?? [], summary: r.summary ?? null }),
@@ -727,28 +727,28 @@ function InfrastructureInner() {
   const correlatedGroups: any[] = eventsData.correlatedGroups
   const eventSummary = eventsData.summary
 
-  const { data: networkData, isLive: networkLive } = useLiveData(
+  const { data: networkData, isLive: networkLive, refresh: refreshNetwork } = useLiveData(
     `/api/k8s/network?window=${winMin}`,
     { nodes: [] as any[], coreDNS: null as any, services: [] as any[], dnsByType: {} as Record<string, number>, tcpStates: null as any, ingressMetrics: [] as any[], nsBandwidth: [] as any[], bwHistory: null as any, retinaMetrics: null as any },
     (r) => ({ nodes: r.nodes ?? [], coreDNS: r.coreDNS ?? null, services: r.services ?? [], dnsByType: r.dnsByType ?? {}, tcpStates: r.tcpStates ?? null, ingressMetrics: r.ingressMetrics ?? [], nsBandwidth: r.nsBandwidth ?? [], bwHistory: r.bwHistory ?? null, retinaMetrics: r.retinaMetrics ?? null }),
   )
-  const { data: latencyData } = useLiveData(
+  const { data: latencyData, refresh: refreshLatency } = useLiveData(
     '/api/k8s/network/latency',
     { available: false as boolean, nodes: [] as string[], matrix: [] as (number | null)[][], okMatrix: [] as boolean[][], stats: { maxLatency: 0, avgLatency: 0, failCount: 0, nodeCount: 0 } },
     (r) => ({ available: r.available ?? false, nodes: r.nodes ?? [], matrix: r.matrix ?? [], okMatrix: r.okMatrix ?? [], stats: r.stats ?? { maxLatency: 0, avgLatency: 0, failCount: 0, nodeCount: 0 } }),
     10000,
   )
-  const { data: endpointHealthData } = useLiveData(
+  const { data: endpointHealthData, refresh: refreshEndpointHealth } = useLiveData(
     '/api/k8s/network/endpoints',
     { services: [] as any[], stats: { total: 0, healthy: 0, degraded: 0, down: 0 } },
     (r) => ({ services: r.services ?? [], stats: r.stats ?? { total: 0, healthy: 0, degraded: 0, down: 0 } }),
   )
-  const { data: netPolData } = useLiveData(
+  const { data: netPolData, refresh: refreshNetworkPolicies } = useLiveData(
     '/api/k8s/networkpolicies',
     { networkPolicies: [] as any[] },
     (r) => ({ networkPolicies: r.networkPolicies ?? [] }),
   )
-  const { data: netSecData } = useLiveData(
+  const { data: netSecData, refresh: refreshNetworkSecurity } = useLiveData(
     '/api/k8s/network/security',
     { networkPolicyGaps: [] as any[], tlsCerts: [] as any[], serviceMesh: { istio: false, linkerd: false, cilium: false, hubble: false, none: true }, egressByPod: [] as any[], egressByNs: [] as any[] },
     (r) => ({
@@ -765,32 +765,32 @@ function InfrastructureInner() {
     return net ? { ...n, ...net } : n
   })
 
-  const { data: podsData } = useLiveData(
+  const { data: podsData, refresh: refreshPods } = useLiveData(
     '/api/k8s/pods',
     { podsByNode: {} as Record<string, K8sPod[]> },
     (r) => ({ podsByNode: r.podsByNode ?? {} }),
   )
 
   // L5: VolumeSnapshots
-  const { data: snapshotsData } = useLiveData(
+  const { data: snapshotsData, refresh: refreshSnapshots } = useLiveData(
     '/api/k8s/storage/snapshots',
     { snapshots: [] as any[], crdAvailable: false },
     (r) => ({ snapshots: r.snapshots ?? [], crdAvailable: r.crdAvailable ?? false }),
   )
   // L5: PVC usage trends from Prometheus
-  const { data: pvcTrendsData } = useLiveData(
+  const { data: pvcTrendsData, refresh: refreshPvcTrends } = useLiveData(
     '/api/k8s/storage/pvc-trends',
     { trends: {} as Record<string, any> },
     (r) => ({ trends: r.trends ?? {} }),
   )
 
-  const { data: iopsData } = useLiveData(
+  const { data: iopsData, refresh: refreshStorageIops } = useLiveData(
     '/api/k8s/storage-iops',
     { pvcs: [] as any[] },
     (r) => ({ pvcs: r.pvcs ?? [] }),
   )
 
-  const { data: clusterMeta } = useLiveData(
+  const { data: clusterMeta, refresh: refreshClusterMeta } = useLiveData(
     '/api/k8s/cluster',
     { id: '—', name: '—', provider: '—', region: '—', version: '—', namespaceCount: 0 },
     (r) => ({ id: r.id ?? '—', name: r.name ?? '—', provider: r.provider ?? '—', region: r.region ?? '—', version: r.version ?? '—', namespaceCount: r.namespaceCount ?? 0 }),
@@ -896,6 +896,16 @@ function InfrastructureInner() {
   const usedMemGi     = Math.round(anyNodes.reduce((a: number, n: any) => a + (n.memoryUsed ?? 0), 0) * 10) / 10
   const totalPods     = anyNodes.reduce((a: number, n: any) => a + (n.podCount ?? n.pods?.running ?? 0), 0)
   const clusterHealthStatus = unhealthyNodes === 0 ? 'healthy' : unhealthyNodes < nodes.length ? 'degraded' : 'critical'
+  const refreshActiveTab = () => {
+    refreshClusterMeta()
+    if (activeTab === 'Cluster Nodes') {
+      refreshNodes(); refreshNodeMetrics(); refreshPods(); refreshEvents()
+    } else if (activeTab === 'Storage') {
+      refreshStorage(); refreshSnapshots(); refreshPvcTrends(); refreshStorageIops()
+    } else {
+      refreshNodes(); refreshNodeMetrics(); refreshNetwork(); refreshLatency(); refreshEndpointHealth(); refreshNetworkPolicies(); refreshNetworkSecurity()
+    }
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -906,17 +916,15 @@ function InfrastructureInner() {
             <Server className="w-5 h-5 text-brand-400" /> Infrastructure
           </h1>
           <p className="text-xs text-surface-500 mt-0.5">
-            {nodes.length} nodes {'\u00B7'} 1 cluster
+            {nodes.length} nodes {'\u00B7'} Active cluster: {activeCluster?.name ?? clusterMeta.name}
             {unhealthyNodes > 0 && <span className="text-danger ml-2">{'\u00B7'} {unhealthyNodes} unhealthy</span>}
             {isLive && <span className="text-success ml-2">{'\u00B7'} live data</span>}
             {nodesLoading && <span className="text-surface-400 ml-2">{'\u00B7'} refreshing{'\u2026'}</span>}
           </p>
         </div>
-        {isLive && (
-          <button onClick={refreshNodes} className="text-xs text-surface-400 hover:text-white flex items-center gap-1">
-            <RefreshCw className="w-3 h-3" /> Refresh
-          </button>
-        )}
+        <button onClick={refreshActiveTab} title={`Refresh ${activeTab}`} className="text-xs text-surface-400 hover:text-white flex items-center gap-1">
+          <RefreshCw className="w-3 h-3" /> Refresh {activeTab}
+        </button>
         {nodesError && (
           <span className="flex items-center gap-1.5 px-2.5 py-1 bg-warning/5 border border-warning/20 rounded-xl text-xs text-warning/80">
             <AlertTriangle className="w-3 h-3" /> {nodesError}
@@ -927,7 +935,7 @@ function InfrastructureInner() {
       <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-6">
 
         {/* Cluster card — real data */}
-        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="max-w-xl">
           <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -941,11 +949,6 @@ function InfrastructureInner() {
               <span>{clusterMeta.provider.toUpperCase()} · {clusterMeta.region}</span>
               <span className="text-surface-600">{clusterMeta.version}</span>
             </div>
-            <div className="space-y-2">
-              <UtilBar value={pct(usedCpuCores, totalCpuCores)} label="CPU" raw={`${usedCpuCores} / ${totalCpuCores} cores`} />
-              <UtilBar value={pct(usedMemGi, totalMemGi)} label="Memory" raw={`${usedMemGi} / ${totalMemGi} GiB`} warn={80} crit={90} />
-              <UtilBar value={pct(usedDiskGiB, totalDiskGiB)} label="Storage" raw={`${Math.round(usedDiskGiB)} / ${Math.round(totalDiskGiB)} GiB`} warn={70} crit={85} />
-            </div>
             <div className="grid grid-cols-3 gap-1 pt-1 text-center border-t border-surface-800">
               {[
                 { label: 'Nodes', value: nodes.length },
@@ -957,10 +960,6 @@ function InfrastructureInner() {
                   <div className="text-2xs text-surface-500">{s.label}</div>
                 </div>
               ))}
-            </div>
-            <div className="flex items-center justify-between text-2xs text-surface-500 pt-1 border-t border-surface-800">
-              <span className="flex items-center gap-1"><Wifi className="w-3 h-3" />↓ {totalNetIn.toFixed(2)} Mbps</span>
-              <span>↑ {totalNetOut.toFixed(2)} Mbps</span>
             </div>
           </motion.div>
         </div>
@@ -3800,4 +3799,3 @@ function InfrastructureInner() {
     </div>
   )
 }
-

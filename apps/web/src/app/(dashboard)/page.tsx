@@ -35,11 +35,20 @@ type IncidentResp = {
   metrics: { open: number; critical: number; slaBreached: number; slaBreaching: number; avgMttrMinutes: number | null; totalAlerts: number; slaCompliancePct: number }
 }
 type SummaryResp = {
-  cluster: { name: string; version: string; nodeCount: number; healthyNodes: number; podCount: number; runningPods: number; crashPods: number; deploymentCount: number; cpuPct: number; memPct: number }
+  cluster: { name: string; version: string; nodeCount: number; healthyNodes: number; podCount: number; workloadPods: number; runningPods: number; crashPods: number; deploymentCount: number; cpuPct: number; memPct: number }
   cost:    { totalPerMo: number; wastedPerMo: number; projected: number; cpuEfficiency: number; memEfficiency: number; cpuPct: number; memPct: number }
   dora:    { deployFrequency7d: number; successRate: number; changeFailureRate: number; recentDeploys: number; frequencyBand: string; cfrBand: string }
   alertSummary: { total: number; critical: number; oldestAlertDays: number }
   insights: { id: string; type: string; title: string; description: string; severity: string; action?: string }[]
+}
+type DeploymentDoraResp = {
+  dora: {
+    deploys7d: number; deployFrequency7d: number; deployFrequency30d: number
+    successRate: number | null; changeFailureRate: number | null
+    ratedDeploys30d: number; failedDeploys30d: number
+    totalDeploys: number; serviceCount: number; inProgress: number
+    frequencyBand: string; cfrBand: string
+  }
 }
 type MetricsResp = {
   clusterMetrics: {
@@ -52,11 +61,14 @@ type MetricsResp = {
 
 const EMPTY_INC: IncidentResp = { incidents: [], metrics: { open: 0, critical: 0, slaBreached: 0, slaBreaching: 0, avgMttrMinutes: null, totalAlerts: 0, slaCompliancePct: 100 } }
 const EMPTY_SUM: SummaryResp = {
-  cluster: { name: '\u2014', version: '\u2014', nodeCount: 0, healthyNodes: 0, podCount: 0, runningPods: 0, crashPods: 0, deploymentCount: 0, cpuPct: 0, memPct: 0 },
+  cluster: { name: '\u2014', version: '\u2014', nodeCount: 0, healthyNodes: 0, podCount: 0, workloadPods: 0, runningPods: 0, crashPods: 0, deploymentCount: 0, cpuPct: 0, memPct: 0 },
   cost:    { totalPerMo: 0, wastedPerMo: 0, projected: 0, cpuEfficiency: 0, memEfficiency: 0, cpuPct: 0, memPct: 0 },
   dora:    { deployFrequency7d: 0, successRate: 0, changeFailureRate: 0, recentDeploys: 0, frequencyBand: 'low', cfrBand: 'low' },
   alertSummary: { total: 0, critical: 0, oldestAlertDays: 0 },
   insights: [],
+}
+const EMPTY_DEPLOYMENT_DORA: DeploymentDoraResp = {
+  dora: { deploys7d: 0, deployFrequency7d: 0, deployFrequency30d: 0, successRate: null, changeFailureRate: null, ratedDeploys30d: 0, failedDeploys30d: 0, totalDeploys: 0, serviceCount: 0, inProgress: 0, frequencyBand: 'no-data', cfrBand: 'no-data' },
 }
 const EMPTY_MET: MetricsResp = {
   clusterMetrics: { cpuUsage: 0, memoryUsage: 0, requestRate: 0, errorRate: 0, p99Latency: 0, p50Latency: 0, history: { cpu: [], memory: [], requests: [], errors: [] } },
@@ -82,6 +94,7 @@ const BAND_CLR: Record<string, string> = {
   high:   'text-brand-400',
   medium: 'text-warning',
   low:    'text-danger',
+  'no-data': 'text-surface-400',
 }
 
 const INS_ICON: Record<string, React.ReactNode> = {
@@ -110,32 +123,32 @@ const STATE_CLR: Record<string, string> = {
 // ── Platform Health Ring ──────────────────────────────────────────
 
 type PlatformScoreInputs = {
-  podHealth: number      // % pods running (0–100), defaults 100 if no pods yet
-  nodeHealth: number     // % nodes ready (0–100), defaults 100 if no nodes yet
+  systemHealth: number   // System Health score (0–100): nodes, pods, deployments, CPU/memory pressure
   slaCompliance: number  // % SLA met (0–100), defaults 100 if no incidents yet
   successRate: number    // % deploy success (0–100), defaults 100 if no deploys yet
   criticalOpen: number   // count of critical-severity open incidents
   highOpen: number       // count of high-severity open incidents
 }
 
-function platformScore(inputs: PlatformScoreInputs): { score: number; breakdown: { podPts: number; nodePts: number; slaPts: number; velPts: number; penalty: number } } {
-  const { podHealth, nodeHealth, slaCompliance, successRate, criticalOpen, highOpen } = inputs
-  const podPts  = Math.round(podHealth  * 0.35)
-  const nodePts = Math.round(nodeHealth * 0.25)
-  const slaPts  = Math.round(slaCompliance * 0.20)
-  const velPts  = Math.round(successRate   * 0.20)
-  const penalty = Math.min(15, criticalOpen * 5 + highOpen * 2)
-  const score   = Math.max(0, Math.min(100, podPts + nodePts + slaPts + velPts - penalty))
-  return { score, breakdown: { podPts, nodePts, slaPts, velPts, penalty } }
+type PlatformBreakdown = { sysPts: number; slaPts: number; velPts: number; penalty: number }
+
+function platformScore(inputs: PlatformScoreInputs): { score: number; breakdown: PlatformBreakdown } {
+  const { systemHealth, slaCompliance, successRate, criticalOpen, highOpen } = inputs
+  const sysPts   = Math.round(systemHealth * 0.60)
+  const slaPts   = Math.round(slaCompliance * 0.20)
+  const velPts   = Math.round(successRate   * 0.20)
+  const penalty  = Math.min(15, criticalOpen * 5 + highOpen * 2)
+  const score    = Math.max(0, Math.min(100, sysPts + slaPts + velPts - penalty))
+  return { score, breakdown: { sysPts, slaPts, velPts, penalty } }
 }
 
-function HealthRing({ score, breakdown, podHealth, nodeHealth, sla, velocity, criticalOpen, highOpen }:
-  { score: number; breakdown: { podPts: number; nodePts: number; slaPts: number; velPts: number; penalty: number }; podHealth: number; nodeHealth: number; sla: number; velocity: number; criticalOpen: number; highOpen: number }) {
+function HealthRing({ score, breakdown, systemHealth, sla, velocity, criticalOpen, highOpen }:
+  { score: number; breakdown: PlatformBreakdown; systemHealth: number; sla: number; velocity: number; criticalOpen: number; highOpen: number }) {
   const size = 72
   const r = size * 0.38; const circ = 2 * Math.PI * r
-  const color = score >= 80 ? '#22c55e' : score >= 60 ? '#f59e0b' : '#ef4444'
-  const label = score >= 80 ? 'Healthy' : score >= 60 ? 'Degraded' : 'Critical'
-  const { podPts, nodePts, slaPts, velPts, penalty } = breakdown
+  const color = score >= 90 ? '#22c55e' : score >= 70 ? '#f59e0b' : '#ef4444'
+  const label = score >= 90 ? 'Healthy' : score >= 70 ? 'Degraded' : 'Critical'
+  const { sysPts, slaPts, velPts, penalty } = breakdown
   const [hovered, setHovered] = useState(false)
   return (
     <div className="relative rounded-2xl bg-surface-900 border border-surface-800 p-4 flex items-center gap-4 cursor-default"
@@ -163,17 +176,10 @@ function HealthRing({ score, breakdown, podHealth, nodeHealth, sla, velocity, cr
           <p className="text-surface-300 font-semibold mb-2">Score breakdown</p>
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
-              <span className="text-surface-400">Pod Health (×0.35)</span>
+              <span className="text-surface-400">System Health (×0.60)</span>
               <span className="tabular-nums">
-                <span className={podHealth >= 95 ? 'text-success' : podHealth >= 80 ? 'text-warning' : 'text-danger'}>{podHealth}%</span>
-                <span className="text-surface-500 ml-1">= +{podPts} pts</span>
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-surface-400">Node Health (×0.25)</span>
-              <span className="tabular-nums">
-                <span className={nodeHealth >= 95 ? 'text-success' : nodeHealth >= 80 ? 'text-warning' : 'text-danger'}>{nodeHealth}%</span>
-                <span className="text-surface-500 ml-1">= +{nodePts} pts</span>
+                <span className={systemHealth >= 90 ? 'text-success' : systemHealth >= 70 ? 'text-warning' : 'text-danger'}>{systemHealth}%</span>
+                <span className="text-surface-500 ml-1">= +{sysPts} pts</span>
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -294,15 +300,19 @@ export default function ExecutiveDashboard() {
   const { data: sum, isLive: sumLive, loading: sumLoading, error: sumErr } = useLiveData<SummaryResp>(
     `/api/dashboard/summary?window=${winMin}`, EMPTY_SUM, undefined, 60_000,
   )
+  const { data: deploymentData, isLive: deploymentLive } = useLiveData<DeploymentDoraResp>(
+    '/api/k8s/deployments-history', EMPTY_DEPLOYMENT_DORA, undefined, 60_000,
+  )
+  const deploymentDora = deploymentData.dora
 
   // On-call schedule
   const { data: oncallData } = useLiveData<OnCallResp>('/api/settings/oncall', EMPTY_ONCALL, undefined, 120_000)
   const primarySchedule = oncallData.schedules.find(s => s.id === 'primary') ?? oncallData.schedules[0] ?? null
   const onCallNow = primarySchedule?.currentOnCall ?? null
 
-  const isAnyLive = healthLive || incLive || metLive || sumLive
+  const isAnyLive = healthLive || incLive || metLive || sumLive || deploymentLive
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null)
-  useEffect(() => { if (isAnyLive) setLastRefreshAt(Date.now()) }, [isAnyLive, sum, incData, metData])
+  useEffect(() => { if (isAnyLive) setLastRefreshAt(Date.now()) }, [isAnyLive, sum, incData, metData, deploymentData])
   const cm = metData.clusterMetrics
   const services = metData.serviceMetrics
 
@@ -312,13 +322,10 @@ export default function ExecutiveDashboard() {
   const criticalOpen = openInc.filter(i => i.severity === 'critical').length
   const highOpen     = openInc.filter(i => i.severity === 'high').length
 
-  const podHealth  = sum.cluster.podCount  > 0 ? Math.round((sum.cluster.runningPods  / sum.cluster.podCount)  * 100) : 100
-  const nodeHealth = sum.cluster.nodeCount > 0 ? Math.round((sum.cluster.healthyNodes / sum.cluster.nodeCount) * 100) : 100
   const { score: platScore, breakdown: platBreakdown } = platformScore({
-    podHealth,
-    nodeHealth,
+    systemHealth: health.score,
     slaCompliance: incData.metrics.slaCompliancePct ?? 100,
-    successRate:   sum.dora.recentDeploys > 0 ? sum.dora.successRate : 100,
+    successRate:   deploymentDora.ratedDeploys30d > 0 ? (deploymentDora.successRate ?? 100) : 100,
     criticalOpen,
     highOpen,
   })
@@ -439,7 +446,7 @@ export default function ExecutiveDashboard() {
           />
         </motion.div>
         <motion.div custom={1} initial="hidden" animate="visible" variants={fadeUp} className="lg:col-span-2">
-          <HealthRing score={platScore} breakdown={platBreakdown} podHealth={podHealth} nodeHealth={nodeHealth} sla={incData.metrics.slaCompliancePct ?? 100} velocity={sum.dora.recentDeploys > 0 ? sum.dora.successRate : 100} criticalOpen={criticalOpen} highOpen={highOpen} />
+          <HealthRing score={platScore} breakdown={platBreakdown} systemHealth={health.score} sla={incData.metrics.slaCompliancePct ?? 100} velocity={deploymentDora.ratedDeploys30d > 0 ? (deploymentDora.successRate ?? 100) : 100} criticalOpen={criticalOpen} highOpen={highOpen} />
         </motion.div>
         {[
           {
@@ -614,7 +621,7 @@ export default function ExecutiveDashboard() {
           <div className="flex items-center gap-2">
             <GitBranch className="w-4 h-4 text-brand-400" />
             <span className="text-sm font-semibold text-white">DORA Metrics</span>
-            <span className="text-2xs text-surface-500 bg-surface-800 px-2 py-0.5 rounded-full" suppressHydrationWarning>last {timeRange}</span>
+            <span className="text-2xs text-surface-500 bg-surface-800 px-2 py-0.5 rounded-full">frequency 7d · rates 30d</span>
           </div>
             <Link href="/deployments" className="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1">
             Deployments <ArrowRight className="w-3 h-3" />
@@ -624,23 +631,23 @@ export default function ExecutiveDashboard() {
           {[
             {
               label: 'Deploy Frequency',
-              value: fmtFreq(sum.dora.deployFrequency7d),
-              band: sum.dora.frequencyBand,
-              sub: `${sum.dora.recentDeploys} deploys in ${timeRange}`,
+              value: fmtFreq(deploymentDora.deployFrequency7d),
+              band: deploymentDora.frequencyBand,
+              sub: `${deploymentDora.deploys7d} revisions in 7d`,
               icon: <GitBranch className="w-4 h-4" />,
             },
             {
               label: 'Success Rate',
-              value: `${sum.dora.successRate}%`,
-              band: sum.dora.successRate >= 95 ? 'elite' : sum.dora.successRate >= 85 ? 'high' : 'medium',
-              sub: `${sum.dora.recentDeploys} total deployments`,
+              value: deploymentDora.successRate === null ? 'N/A' : `${deploymentDora.successRate}%`,
+              band: deploymentDora.successRate === null ? 'no-data' : deploymentDora.successRate >= 95 ? 'elite' : deploymentDora.successRate >= 85 ? 'high' : 'medium',
+              sub: `${deploymentDora.ratedDeploys30d} completed in 30d · ${deploymentDora.failedDeploys30d} failed`,
               icon: <CheckCircle2 className="w-4 h-4" />,
             },
             {
               label: 'Change Failure Rate',
-              value: `${sum.dora.changeFailureRate}%`,
-              band: sum.dora.cfrBand,
-              sub: 'deployments with unavailable pods',
+              value: deploymentDora.changeFailureRate === null ? 'N/A' : `${deploymentDora.changeFailureRate}%`,
+              band: deploymentDora.cfrBand,
+              sub: `${deploymentDora.failedDeploys30d} failed of ${deploymentDora.ratedDeploys30d} completed in 30d`,
               icon: <AlertTriangle className="w-4 h-4" />,
             },
             {
