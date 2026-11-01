@@ -12,7 +12,8 @@
     "dev": "turbo dev",
     "build": "turbo build",
     "lint": "turbo lint",
-    "type-check": "turbo type-check"
+    "type-check": "turbo type-check",
+    "bootstrap-admin": "node apps/web/scripts/bootstrap-admin.mjs"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.7",

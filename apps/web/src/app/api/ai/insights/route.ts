@@ -488,8 +488,8 @@ export async function GET() {
   if (on.high_restart_rate !== false && highRestarts.length > 0
       && shouldFire(`high_restart_rate:${highRestarts[0]?.metric.pod ?? '?'}`, cooldownMs)) {
     await fire('high_restart_rate', 'warning',
-      `?? *VynOps ? High Restart Rate on ${highRestarts.length} container(s)*`,
-      `VynOps: high restarts ? ${highRestarts.slice(0, 2).map(r => `${r.metric.pod ?? r.metric.container}: ${r.value.toFixed(0)}/6h`).join(', ')}`,
+      `*VynOps WARNING - High Restart Rate on ${highRestarts.length} container(s)*`,
+      `VynOps warning: high restarts - ${highRestarts.slice(0, 2).map(r => `${r.metric.pod ?? r.metric.container}: ${r.value.toFixed(0)}/6h`).join(', ')}`,
       highRestarts.slice(0, 3).map(r => ({ title: r.metric.pod ?? r.metric.container ?? 'unknown', value: `${r.value.toFixed(0)} restarts in 6h` })),
     )
   }

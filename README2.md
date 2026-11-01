@@ -216,35 +216,33 @@ cd vynops
 # 2. Install all workspace dependencies
 npm install
 
-# 3. Configure environment
-cp apps/web/.env.local.example apps/web/.env.local
+# 3. Install creates apps/web/.env.local with a generated AUTH_SECRET.
+# Do not copy .env.local.example over it; that would replace the generated secret.
 ```
 
-Edit `apps/web/.env.local` — minimum required values:
+Edit `apps/web/.env.local` to add the AI key and choose a strong first-admin password. The admin name and email are prefilled and can be changed:
 ```env
-AUTH_SECRET=<output of: openssl rand -base64 32>
-NEXTAUTH_URL=http://localhost:3030
 GROQ_API_KEY=gsk_...          # free at https://console.groq.com
+INITIAL_ADMIN_NAME=VynOps Administrator
+INITIAL_ADMIN_EMAIL=admin@vynops.io
+INITIAL_ADMIN_PASSWORD=<unique password of at least 12 characters>
 ```
 
 ```bash
-# 4. Start kubectl proxy (in a separate terminal)
+# 4. Create the first persistent admin (one-time; removes INITIAL_ADMIN_* from .env.local)
+npm run bootstrap-admin
+
+# 5. Start kubectl proxy (in a separate terminal)
 kubectl proxy --port=8001
 
-# 5. Start VynOps
+# 6. Start VynOps
 npm run dev
 # → http://localhost:3030
 ```
 
-**Default credentials:**
-| Field | Value |
-|-------|-------|
-| Email | `admin@vynops.local` |
-| Password | `changeme` |
+The bootstrap creates `data/users.json` and a bcrypt hash in `data/passwords.json`; it does not store plaintext passwords. It refuses to overwrite a non-empty user store. Later users can be added in **Settings → Users**.
 
-> ⚠️ Change the default password immediately via **Settings → Users**.
-
-> ⚠️ Demo credentials are only active when `data/users.json` does not exist. Once you create your first user through the UI, demo users are disabled.
+**Optional local demo mode:** Set `DEMO_USERS_ENABLED=true` and unique `DEMO_ADMIN_PASSWORD`, `DEMO_OPERATOR_PASSWORD`, and `DEMO_VIEWER_PASSWORD` values in `.env.local`. Demo users are disabled in production and are not created in `users.json`.
 
 ---
 
@@ -255,7 +253,7 @@ When running on a remote VM accessed by its public IP:
 ```bash
 # In apps/web/.env.local on the server:
 AUTH_SECRET=<same strong secret as generated above>
-NEXTAUTH_URL=http://YOUR-SERVER-IP:3000
+NEXTAUTH_URL=http://YOUR-SERVER-IP:3030
 ALLOWED_DEV_ORIGINS=YOUR-SERVER-IP
 GROQ_API_KEY=gsk_...
 K8S_API_URL=http://127.0.0.1:8001
@@ -461,7 +459,7 @@ VynOps sends notifications automatically when critical events occur.
 ### Authentication
 - Session-based auth via NextAuth v5 with JWT
 - Passwords hashed with bcrypt (10 salt rounds)
-- User accounts stored in `data/users.json` — never committed to git
+- User accounts stored in `data/users.json` — excluded by `.gitignore` when untracked; verify it is not already tracked before publishing
 - `AUTH_SECRET` must be a cryptographically random 32-byte base64 string
 
 ### Role-based access
@@ -472,7 +470,7 @@ VynOps sends notifications automatically when critical events occur.
 | `viewer` | Read-only — dashboards, metrics, incidents (no actions) |
 
 ### Data security
-- `data/` directory is gitignored — cluster URLs, user passwords, and API keys never leave the server
+- `apps/web/data/` is ignored by default, with selected bootstrap/example files explicitly allowlisted in `.gitignore`; verify their contents are synthetic and non-sensitive before committing
 - `config.runtime.json` (Slack webhook, Groq key, SMTP password) is gitignored
 - `.env.local` is gitignored
 
@@ -640,7 +638,6 @@ Every API request can be routed to a specific cluster by including these headers
 | "No cluster" in header | No cluster registered | Settings → Clusters → Add Cluster |
 | Prometheus data missing | kubectl proxy not running | `kubectl proxy --port=8001 &` |
 | Pod terminal (exec) doesn't work | Using `next dev` instead of `npm run dev` | Always use `npm run dev` — it uses `server.mjs` |
-| Port 3000 already in use | Another process on port 3000 | `lsof -i :3000` to find it, or set `PORT=3001` in `.env.local` |
 | `NEXTAUTH_URL` mismatch | Accessing via different IP/port than configured | Update `NEXTAUTH_URL` to match your actual access URL |
 | Loki "not configured" | Active cluster has empty `lokiUrl` | Edit cluster in Settings → Clusters, set Loki URL |
 | AI Copilot not responding | Groq key missing or invalid | Check `GROQ_API_KEY` in `.env.local` |

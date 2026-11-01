@@ -122,7 +122,9 @@ export async function POST(req: Request) {
 
   for (const inc of open) {
     // Find first matching pattern
-    const match = PATTERN_MAP.find(p => p.pattern.test(inc.title) || p.pattern.test(inc.service))
+    const alertNames = (inc.alerts ?? []).map(alert => alert.name)
+    const matchContext = [inc.title, inc.service, ...alertNames].join(' ')
+    const match = PATTERN_MAP.find(p => p.pattern.test(matchContext))
     if (!match) continue
 
     const { runbookId, autoRunAllowedDefault } = match

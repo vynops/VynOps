@@ -697,6 +697,11 @@ function InfrastructureInner() {
     { pvs: [] as PersistentVolume[], storageclasses: [] as StorageClass[], pvcs: [] as PersistentVolumeClaim[], orphanedPVs: [] as any[], orphanedConfigMaps: [] as any[], orphanedSecrets: [] as any[], summary: null as any },
     (r) => ({ pvs: r.pvs ?? [], storageclasses: r.storageclasses ?? [], pvcs: r.pvcs ?? [], orphanedPVs: r.orphanedPVs ?? [], orphanedConfigMaps: r.orphanedConfigMaps ?? [], orphanedSecrets: r.orphanedSecrets ?? [], summary: r.summary ?? null }),
   )
+  useEffect(() => {
+    const refresh = () => refreshStorage()
+    window.addEventListener('vynops:refresh-storage', refresh)
+    return () => window.removeEventListener('vynops:refresh-storage', refresh)
+  }, [refreshStorage])
   const pvs: PersistentVolume[] = storageData.pvs
   const storageclasses: StorageClass[] = storageData.storageclasses
   const pvcs: PersistentVolumeClaim[] = storageData.pvcs

@@ -357,11 +357,21 @@ export async function POST(req: Request) {
     const first  = !p.notifiedAt
     const remind = !first && !p.reminderSentAt && Date.now() - Date.parse(p.notifiedAt!) > REMIND_AFTER_MS
     if (!first && !remind) continue
+    const detail = [
+      `Root cause: ${p.reasoning || 'No explanation provided'}`,
+      `Confidence: ${p.confidence}%`,
+      'Proposed remediation:',
+      ...p.steps.map((step, index) => {
+        const target = step.target ? ` (${step.namespace ?? p.namespace}/${step.target})` : ''
+        return `${index + 1}. ${step.action}${target} - ${step.reason}`
+      }),
+    ].join('\n').slice(0, 1200)
     // Marked before sending so a failing channel cannot cause a notification every cycle.
     updatePlan(p.id, first ? { notifiedAt: nowIso } : { reminderSentAt: nowIso })
     await notifyIncident({
       id:       p.id,
       title:    `${remind ? 'Reminder: ' : ''}AI plan awaiting approval for ${p.incidentTitle}`,
+      detail,
       severity: inc.severity,
       service:  p.service,
       state:    `pending approval (${p.confidence}% confidence)`,

@@ -3,19 +3,24 @@ import Credentials from 'next-auth/providers/credentials'
 import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 
-// -- Fallback demo users (used only when data/users.json is absent) --------
+// -- Development-only fallback users (never used in production) -----------
 const DEMO_USERS = [
   { id: '1', name: 'Alex Karev',   email: 'admin@VynOps.io',    role: 'admin'    as const, team: 'Platform Engineering', avatar: 'AK' },
   { id: '2', name: 'Sarah Chen',   email: 'operator@VynOps.io', role: 'operator' as const, team: 'SRE',                  avatar: 'SC' },
   { id: '3', name: 'Mike Johnson', email: 'viewer@VynOps.io',   role: 'viewer'   as const, team: 'Engineering',          avatar: 'MJ' },
 ]
 
-// Fallback in-memory password hashes for the 3 demo users.
-// In production, hashes live in data/passwords.json (written by /api/settings/users).
+const DEMO_USERS_ENABLED = process.env.NODE_ENV !== 'production' && process.env.DEMO_USERS_ENABLED === 'true'
+
+// Demo users require explicit local passwords. Persistent users use passwords.json.
 const PASSWORD_HASHES: Record<string, string> = {
-  '1': process.env.USER_1_PASSWORD_HASH ?? bcrypt.hashSync(process.env.DEMO_ADMIN_PASSWORD    ?? 'admin123',    10),
-  '2': process.env.USER_2_PASSWORD_HASH ?? bcrypt.hashSync(process.env.DEMO_OPERATOR_PASSWORD ?? 'operator123', 10),
-  '3': process.env.USER_3_PASSWORD_HASH ?? bcrypt.hashSync(process.env.DEMO_VIEWER_PASSWORD   ?? 'viewer123',   10),
+  '1': process.env.USER_1_PASSWORD_HASH ?? (process.env.DEMO_ADMIN_PASSWORD ? bcrypt.hashSync(process.env.DEMO_ADMIN_PASSWORD, 10) : ''),
+  '2': process.env.USER_2_PASSWORD_HASH ?? (process.env.DEMO_OPERATOR_PASSWORD ? bcrypt.hashSync(process.env.DEMO_OPERATOR_PASSWORD, 10) : ''),
+  '3': process.env.USER_3_PASSWORD_HASH ?? (process.env.DEMO_VIEWER_PASSWORD ? bcrypt.hashSync(process.env.DEMO_VIEWER_PASSWORD, 10) : ''),
+}
+
+function demoUsers(): typeof DEMO_USERS {
+  return DEMO_USERS_ENABLED && DEMO_USERS.every(user => Boolean(PASSWORD_HASHES[user.id])) ? DEMO_USERS : []
 }
 
 // -- Read users from data/users.json (upgrade-safe, live-reload) ----------
@@ -26,11 +31,11 @@ function readUsers(): typeof DEMO_USERS {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { join } = require('path') as typeof import('path')
     const p = join(process.cwd(), 'data', 'users.json')
-    if (!existsSync(p)) return DEMO_USERS
+    if (!existsSync(p)) return demoUsers()
     const arr = JSON.parse(readFileSync(p, 'utf8'))
-    return Array.isArray(arr) && arr.length > 0 ? arr : DEMO_USERS
+    return Array.isArray(arr) && arr.length > 0 ? arr : demoUsers()
   } catch {
-    return DEMO_USERS
+    return demoUsers()
   }
 }
 
