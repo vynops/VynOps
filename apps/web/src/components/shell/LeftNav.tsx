@@ -2,11 +2,13 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useSession, signOut } from 'next-auth/react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard, Activity, Server, Boxes, DollarSign, Siren,
   GitFork, Bot, Zap, ShieldAlert, BarChart3, Bell,
   Settings, ChevronLeft, ChevronRight, Rocket, X as CloseX, BrainCircuit,
+  UserRound, LogOut, LayoutGrid,
 } from 'lucide-react'
 import { useDashboardStore } from '@/store'
 import { cn } from '@/lib/utils'
@@ -60,6 +62,7 @@ const NAV_GROUPS: NavGroup[] = [
 
 export default function LeftNav() {
   const pathname = usePathname()
+  const { data: session, status: sessionStatus } = useSession()
   const [collapsed, setCollapsed] = useState(false)
   const mobileOpen = useDashboardStore(s => s.mobileNavOpen)
   const setMobileNavOpen = useDashboardStore(s => s.setMobileNavOpen)
@@ -69,6 +72,9 @@ export default function LeftNav() {
   const [appName,    setAppName]    = useState('VynOps')
   const [appTagline, setAppTagline] = useState('AI Platform')
   const appInitial = appName.charAt(0).toUpperCase() || 'A'
+  const userName = session?.user?.name?.trim() || 'User'
+  const role = session?.user?.role
+  const roleLabel = role ? role.charAt(0).toUpperCase() + role.slice(1) : 'Account'
 
   useEffect(() => {
     try {
@@ -114,6 +120,7 @@ export default function LeftNav() {
 
       {/* Nav */}
       <motion.nav
+        style={{ width: collapsed ? 56 : 220 }}
         animate={{ width: collapsed ? 56 : 220 }}
         transition={{ duration: 0.2, ease: 'easeInOut' }}
         className={cn(
@@ -218,9 +225,62 @@ export default function LeftNav() {
           ))}
         </div>
 
+        <footer className="flex-shrink-0 border-t border-surface-800">
+          <div className={cn('flex items-center gap-2 px-3 py-3', collapsed && 'flex-col px-2')}>
+            <div
+              className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg bg-surface-800 text-surface-300"
+              title={collapsed ? `${roleLabel}: ${userName}` : undefined}
+            >
+              <UserRound className="w-4 h-4" />
+            </div>
+            {!collapsed && (
+              <div className="min-w-0 flex-1" aria-busy={sessionStatus === 'loading'}>
+                {sessionStatus === 'loading' ? (
+                  <div className="space-y-1.5 animate-pulse">
+                    <div className="h-3 w-12 rounded bg-surface-800" />
+                    <div className="h-3 w-20 rounded bg-surface-800" />
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-xs font-semibold text-white truncate" title={roleLabel}>{roleLabel}</p>
+                    <p className="text-xs text-surface-400 truncate" title={userName}>{userName}</p>
+                  </>
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => signOut({ callbackUrl: '/login' })}
+              disabled={sessionStatus === 'loading'}
+              aria-label="Sign out"
+              title="Sign out"
+              className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg text-surface-400 hover:text-white hover:bg-surface-800 disabled:opacity-50 transition-colors"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="border-t border-surface-800 px-2 py-2.5 text-center text-2xs text-surface-500">
+            {collapsed ? (
+              <a href="https://vynops.com" target="_blank" rel="noopener noreferrer"
+                aria-label="Part of VynOps Suite" title="Part of VynOps Suite"
+                className="mx-auto w-8 h-8 flex items-center justify-center rounded-lg text-cyan-500 hover:text-cyan-400 hover:bg-surface-800 transition-colors">
+                <LayoutGrid className="w-4 h-4" />
+              </a>
+            ) : (
+              <>
+                Part of{' '}
+                <a href="https://vynops.com" target="_blank" rel="noopener noreferrer"
+                  className="text-cyan-500 hover:text-cyan-400 transition-colors">VynOps Suite</a>
+              </>
+            )}
+          </div>
+        </footer>
+
         {/* Collapse toggle */}
         <button
           onClick={() => setCollapsed(c => !c)}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           className="absolute -right-3 top-[72px] z-30 w-6 h-6 rounded-full bg-surface-800 border border-surface-700 hidden sm:flex items-center justify-center text-surface-400 hover:text-white hover:bg-surface-700 transition-colors"
         >
           {collapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronLeft className="w-3 h-3" />}

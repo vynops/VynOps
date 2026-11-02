@@ -6,12 +6,6 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { Loader2, Shield, AlertCircle } from 'lucide-react'
 import { Suspense } from 'react'
 
-const DEMO_CREDS = [
-  { label: 'Admin', email: 'admin@VynOps.io', password: 'admin123', color: 'border-brand-500/40 bg-brand-500/10 hover:bg-brand-500/20 text-brand-300', badge: 'Full Access' },
-  { label: 'Operator', email: 'operator@VynOps.io', password: 'operator123', color: 'border-warning-500/40 bg-warning-500/10 hover:bg-warning-500/20 text-warning-300', badge: 'SRE Access' },
-  { label: 'Viewer', email: 'viewer@VynOps.io', password: 'viewer123', color: 'border-surface-600 bg-surface-800/60 hover:bg-surface-700 text-surface-300', badge: 'Read Only' },
-]
-
 function LoginForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -35,29 +29,7 @@ function LoginForm() {
       })
 
       if (res?.error) {
-        setError('Invalid email or password. Try a demo account below.')
-      } else {
-        router.push(callbackUrl)
-        router.refresh()
-      }
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const fillDemo = async (cred: (typeof DEMO_CREDS)[0]) => {
-    setEmail(cred.email)
-    setPassword(cred.password)
-    setError('')
-    setLoading(true)
-    try {
-      const res = await signIn('credentials', {
-        email: cred.email,
-        password: cred.password,
-        redirect: false,
-      })
-      if (res?.error) {
-        setError('Demo login failed. Please try again.')
+        setError('Invalid email or password.')
       } else {
         router.push(callbackUrl)
         router.refresh()
@@ -153,32 +125,6 @@ function LoginForm() {
               )}
             </button>
           </form>
-
-          {/* Divider */}
-          <div className="flex items-center gap-3">
-            <div className="flex-1 h-px bg-surface-700" />
-            <span className="text-xs text-surface-500">Demo accounts</span>
-            <div className="flex-1 h-px bg-surface-700" />
-          </div>
-
-          {/* Demo credential chips */}
-          <div className="grid grid-cols-3 gap-2">
-            {DEMO_CREDS.map((cred) => (
-              <button
-                key={cred.label}
-                type="button"
-                onClick={() => fillDemo(cred)}
-                className={`flex flex-col items-center gap-1 p-3 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${cred.color}`}
-              >
-                <span className="font-semibold">{cred.label}</span>
-                <span className="opacity-70 font-normal">{cred.badge}</span>
-              </button>
-            ))}
-          </div>
-
-          <p className="text-center text-xs text-surface-500">
-            Click a demo account to sign in instantly
-          </p>
         </div>
 
         {/* Family footer */}
