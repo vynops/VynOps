@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Settings, User, Bell, Key, Server, GitBranch, Database, Info,
+  Settings, User, Bell, Server, Database, Info,
   CheckCircle2, XCircle, RefreshCw, Save, Loader2, Copy, Eye,
   EyeOff, AlertTriangle, Activity, Shield,
   ChevronRight, Package, ExternalLink, Zap, Send, Radio,
@@ -28,12 +28,10 @@ const SECTIONS = [
   { id: 'clusters',      label: 'Clusters',       icon: Layers },
   { id: 'connections',   label: 'Connections',   icon: Server },
   { id: 'datasources',   label: 'Data Sources',  icon: Database },
-  { id: 'integrations',  label: 'Integrations',  icon: GitBranch },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'ai-provider',   label: 'AI Provider',   icon: Zap },
   { id: 'users',         label: 'Users',          icon: Users },
   { id: 'oncall',        label: 'On-Call',        icon: Clock },
-  { id: 'access',        label: 'Access & Keys', icon: Key },
   { id: 'audit-log',     label: 'Audit Log',     icon: BookOpen },
   { id: 'profile',       label: 'Profile',       icon: User },
   { id: 'about',         label: 'About',         icon: Info },
@@ -446,6 +444,7 @@ function DataSourcesTab() {
       {lastAt && (
         <p className="text-2xs text-surface-600">Last probed at {lastAt}</p>
       )}
+      <IntegrationsTab category="Security" />
     </div>
   )
 }
@@ -458,7 +457,7 @@ const INTEGRATIONS = [
   { id: 'datadog', name: 'Datadog', desc: 'Metrics forwarding',           category: 'Monitoring', probeRoute: null,              docs: 'https://docs.datadoghq.com', status: 'coming-soon' },
 ]
 
-function IntegrationsTab() {
+function IntegrationsTab({ category }: { category?: string }) {
   const [statuses,  setStatuses]  = useState<Record<string, 'idle' | 'checking' | 'ok' | 'error'>>({})
   const [enabled,   setEnabled]   = useState<Record<string, boolean>>({})
   const [loading,   setLoading]   = useState(true)
@@ -466,7 +465,7 @@ function IntegrationsTab() {
   const [saved,     setSaved]     = useState(false)
   const [dirty,     setDirty]     = useState(false)
   const role = useRole()
-  useDirtyGuard('integrations', dirty)
+  useDirtyGuard(category === 'Security' ? 'datasources-security' : 'integrations', dirty)
 
   useEffect(() => {
     fetch('/api/settings/config').then(r => r.json()).then(d => {
@@ -499,7 +498,8 @@ function IntegrationsTab() {
     }
   }
 
-  const byCategory = INTEGRATIONS.reduce<Record<string, typeof INTEGRATIONS>>((acc, i) => {
+  const items = INTEGRATIONS.filter(item => category ? item.category === category : item.category !== 'Security')
+  const byCategory = items.reduce<Record<string, typeof INTEGRATIONS>>((acc, i) => {
     ;(acc[i.category] ??= []).push(i)
     return acc
   }, {})
@@ -507,7 +507,7 @@ function IntegrationsTab() {
   if (loading) return <div className="flex items-center gap-2 text-xs text-surface-500 py-4"><Loader2 className="w-4 h-4 animate-spin" /> Loading...</div>
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className={cn('space-y-6', category === 'Security' ? 'w-full' : 'max-w-2xl')}>
       {dirty && (
         <div className="rounded-xl bg-warning/10 border border-warning/30 px-4 py-2.5 flex items-center gap-2 text-xs text-warning">
           <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
@@ -1196,7 +1196,6 @@ function AIProviderTab() {
   )
 }
 
-// -- Access & Keys tab -----------------------------------------------------
 // -- Users tab -----------------------------------------------------------
 type StoredUser = { id: string; name: string; email: string; role: 'admin' | 'operator' | 'viewer'; team: string; avatar: string; createdAt: string }
 const ROLE_BADGE: Record<string, string> = {
@@ -1981,56 +1980,29 @@ function OnCallTab() {
   )
 }
 
-function AccessTab() {
-  return (
-    <div className="space-y-5 max-w-2xl">
-      <div>
-        <h2 className="text-sm font-semibold text-white">API Keys</h2>
-        <p className="text-xs text-surface-500 mt-0.5">Manage service account tokens for external integrations</p>
-      </div>
-
-      <div className="rounded-2xl bg-surface-900/50 border border-surface-800 p-8 flex flex-col items-center text-center gap-3">
-        <div className="w-12 h-12 rounded-2xl bg-surface-800 border border-surface-700 flex items-center justify-center">
-          <Key className="w-5 h-5 text-surface-500" />
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-white">API Key Management</p>
-          <p className="text-xs text-surface-500 mt-1 max-w-xs">Scoped service tokens with audit logging - arriving in v0.2</p>
-        </div>
-        <div className="flex flex-wrap gap-2 justify-center mt-1">
-          {['read:metrics', 'read:pods', 'write:incidents', 'read:alerts'].map(s => (
-            <span key={s} className="text-2xs font-mono bg-brand-500/10 text-brand-400 border border-brand-500/20 px-2 py-0.5 rounded">{s}</span>
-          ))}
-        </div>
-      </div>
-
-      <div className="rounded-xl bg-surface-900/50 border border-surface-800 px-4 py-3 flex items-start gap-2">
-        <Shield className="w-3.5 h-3.5 text-surface-500 flex-shrink-0 mt-0.5" />
-        <p className="text-2xs text-surface-500 leading-relaxed">
-          API keys will grant scoped access to the VynOps REST API. Keys will be hashed at rest and shown only once at creation. Never commit keys to source control.
-        </p>
-      </div>
-    </div>
-  )
-}
-
 // -- Audit Log tab -------------------------------------------------------
 function AuditLogTab() {
   const [entries,      setEntries]      = useState<any[]>([])
   const [total,        setTotal]        = useState(0)
   const [loading,      setLoading]      = useState(true)
+  const [error,        setError]        = useState('')
   const [page,         setPage]         = useState(0)
   const [userFilter,   setUserFilter]   = useState('')
   const [actionFilter, setActionFilter] = useState('')
+  const [exporting,    setExporting]    = useState(false)
   const PAGE_SIZE = 20
 
   const load = useCallback(async (p = 0, u = '', a = '') => {
     setLoading(true)
+    setError('')
     try {
       const r = await fetch(`/api/settings/audit?page=${p}&pageSize=${PAGE_SIZE}&user=${encodeURIComponent(u)}&action=${encodeURIComponent(a)}`)
       const d = await r.json()
+      if (!r.ok) throw new Error(d.error ?? `Request failed (${r.status})`)
       setEntries(d.entries ?? [])
       setTotal(d.total ?? 0)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to load audit log')
     } finally { setLoading(false) }
   }, [])
 
@@ -2039,29 +2011,35 @@ function AuditLogTab() {
   const applyFilter = () => { setPage(0); load(0, userFilter, actionFilter) }
 
   const exportLog = async () => {
+    setExporting(true)
+    setError('')
     try {
-      const r = await fetch('/api/settings/audit?export=1')
+      const params = new URLSearchParams({ export: '1', user: userFilter, action: actionFilter })
+      const r = await fetch(`/api/settings/audit?${params}`)
       const d = await r.json()
+      if (!r.ok) throw new Error(d.error ?? `Export failed (${r.status})`)
       const blob = new Blob([JSON.stringify(d.entries, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url; a.download = `audit-log-${new Date().toISOString().slice(0, 10)}.json`
       document.body.appendChild(a); a.click(); document.body.removeChild(a)
       setTimeout(() => URL.revokeObjectURL(url), 100)
-    } catch { /* ignore */ }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to export audit log')
+    } finally { setExporting(false) }
   }
 
   return (
-    <div className="space-y-4 max-w-2xl">
+    <div className="space-y-4 w-full">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold text-white">Audit Log</h2>
-          <p className="text-xs text-surface-500 mt-0.5">Records the actor, action, time, and changed fields or details for settings, users, incidents, deployments, security, Kubernetes, and automation. Appends to <code className="font-mono text-brand-300">audit.log.jsonl</code> in the app working directory; rotates at 5 MiB to <code className="font-mono text-brand-300">.1</code> and <code className="font-mono text-brand-300">.2</code>. This view reads the current file only.</p>
+          <p className="text-xs text-surface-500 mt-0.5">Records platform activity by actor, action, time, and changed fields or details. Includes the current audit log and its two rotated history files. Access is restricted to administrators.</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={exportLog}
+          <button onClick={exportLog} disabled={exporting}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-xl text-xs text-surface-300 hover:text-white transition-all">
-            <Download className="w-3.5 h-3.5" /> Export
+            {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Export filtered
           </button>
           <button onClick={() => load(page, userFilter, actionFilter)} disabled={loading}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-xl text-xs text-surface-300 hover:text-white disabled:opacity-50 transition-all">
@@ -2070,6 +2048,8 @@ function AuditLogTab() {
           </button>
         </div>
       </div>
+
+      {error && <p role="alert" className="rounded-lg border border-danger/20 bg-danger/5 px-3 py-2 text-xs text-danger">{error}</p>}
 
       {/* Filter */}
       <div className="flex items-center gap-2">
@@ -2140,11 +2120,11 @@ function AuditLogTab() {
         <div className="flex items-center justify-between text-xs text-surface-500">
           <span>{total} total entries | page {page + 1} of {Math.ceil(total / PAGE_SIZE)}</span>
           <div className="flex items-center gap-2">
-            <button onClick={() => { const p = page - 1; setPage(p); load(p, userFilter) }} disabled={page === 0}
+            <button onClick={() => { const p = page - 1; setPage(p); load(p, userFilter, actionFilter) }} disabled={page === 0 || loading}
               className="px-2.5 py-1 rounded-lg bg-surface-800 border border-surface-700 hover:bg-surface-700 disabled:opacity-40 transition-all text-xs text-surface-300">
               Previous
             </button>
-            <button onClick={() => { const p = page + 1; setPage(p); load(p, userFilter) }} disabled={(page + 1) * PAGE_SIZE >= total}
+            <button onClick={() => { const p = page + 1; setPage(p); load(p, userFilter, actionFilter) }} disabled={(page + 1) * PAGE_SIZE >= total || loading}
               className="px-2.5 py-1 rounded-lg bg-surface-800 border border-surface-700 hover:bg-surface-700 disabled:opacity-40 transition-all text-xs text-surface-300">
               Next
             </button>
@@ -2194,7 +2174,7 @@ function AboutTab() {
         </div>
         <div className="grid grid-cols-2 gap-3">
           {[
-            { label: 'Version',     value: '26.10.25' },
+            { label: 'Version',     value: '26.11.01' },
             { label: 'Framework',   value: 'Next.js 15 App Router' },
             { label: 'Runtime',     value: 'Node.js 20' },
             { label: 'License',     value: 'Private' },
@@ -2778,13 +2758,23 @@ function ClustersTab() {
 
 function SettingsInner() {
   const searchParams = useSearchParams()
-  const [section, setSection] = useState<SectionId>(
-    (searchParams.get('tab') as SectionId) ?? 'connections'
-  )
+  const [section, setSection] = useState<SectionId>(() => {
+    const requested = searchParams.get('tab')
+    if (requested === 'integrations') return 'datasources'
+    if (requested === 'access') return 'users'
+    return SECTIONS.find(item => item.id === requested)?.id ?? 'connections'
+  })
   const [search,  setSearch]  = useState('')
-  const { data: session } = useSession()
+  const { data: session, status: sessionStatus } = useSession()
   const role = ((session?.user as any)?.role ?? 'viewer') as Role
   const router = useRouter()
+  const availableSections = SECTIONS.filter(item => item.id !== 'audit-log' || role === 'admin' || sessionStatus === 'loading')
+
+  useEffect(() => {
+    if (sessionStatus === 'authenticated' && role !== 'admin' && section === 'audit-log') {
+      setSection('connections')
+    }
+  }, [role, section, sessionStatus])
 
   const switchSection = (next: SectionId) => {
     if (_dirtySection && _dirtySection !== next) {
@@ -2793,7 +2783,7 @@ function SettingsInner() {
     setSection(next)
   }
 
-  const filteredSections = SECTIONS.filter(s =>
+  const filteredSections = availableSections.filter(s =>
     !search || s.label.toLowerCase().includes(search.toLowerCase())
   )
 
@@ -2806,7 +2796,7 @@ function SettingsInner() {
               <h1 className="text-lg font-bold text-white flex items-center gap-2">
                 <Settings className="w-5 h-5 text-brand-400" /> Settings
               </h1>
-              <p className="text-xs text-surface-500 mt-0.5">Platform configuration · connections · integrations · access</p>
+              <p className="text-xs text-surface-500 mt-0.5">Platform configuration · connections · data sources · access</p>
             </div>
             <span className={cn('text-2xs px-2 py-0.5 rounded-full border font-medium capitalize',
               role === 'admin'    ? 'text-brand-400 bg-brand-500/10 border-brand-500/20' :
@@ -2829,7 +2819,7 @@ function SettingsInner() {
             value={section}
             onChange={e => switchSection(e.target.value as SectionId)}
             className="w-full bg-surface-800 border border-surface-700 rounded-xl px-3 py-2 text-sm text-white outline-none focus:border-brand-500">
-            {SECTIONS.map(s => (
+            {availableSections.map(s => (
               <option key={s.id} value={s.id}>{s.label}</option>
             ))}
           </select>
@@ -2871,12 +2861,10 @@ function SettingsInner() {
                 {section === 'connections'   && <ConnectionsTab />}
                 {section === 'clusters'       && <ClustersTab />}
                 {section === 'datasources'   && <DataSourcesTab />}
-                {section === 'integrations'  && <IntegrationsTab />}
                 {section === 'notifications' && <NotificationsTab />}
                 {section === 'ai-provider'   && <AIProviderTab />}
                 {section === 'users'         && <UsersTab />}
                 {section === 'oncall'         && <OnCallTab />}
-                {section === 'access'        && <AccessTab />}
                 {section === 'audit-log'     && <AuditLogTab />}
                 {section === 'about'         && <AboutTab />}
                 {section === 'profile'       && <ProfileTab />}
