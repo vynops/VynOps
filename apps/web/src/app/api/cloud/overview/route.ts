@@ -1,61 +1,50 @@
 import { NextResponse } from 'next/server'
 import { resolveK8sUrl, resolvePromUrl, resolveClusterMeta, K8S_TIMEOUT_MS } from '@/lib/cluster'
 import { readConfig } from '@/app/api/settings/config/shared'
+import { calculateWeightedEfficiency, getEffectivePodRequests, parseCapGiB } from '../finops-math'
 
 const HOURS_PER_MONTH  = 730
 const SKIP_NS = new Set(['kube-system', 'kube-public', 'kube-node-lease'])
 
 // ?? Helpers ??????????????????????????????????????????????????????????????????
 
-function parseCpuMillis(s?: string): number {
-  if (!s) return 0
-  if (s.endsWith('m')) return parseInt(s)
-  return Math.round(parseFloat(s) * 1000)
-}
-
-function parseMemMiB(s?: string): number {
-  if (!s) return 0
-  if (s.endsWith('Ki')) return Math.round(parseInt(s) / 1024)
-  if (s.endsWith('Mi')) return parseInt(s)
-  if (s.endsWith('Gi')) return Math.round(parseFloat(s) * 1024)
-  if (s.endsWith('Ti')) return Math.round(parseFloat(s) * 1024 * 1024)
-  return Math.round(parseInt(s) / (1024 * 1024))
-}
-
-function parseCapGiB(s?: string): number {
-  if (!s) return 0
-  if (s.endsWith('Ki')) return parseInt(s) / 1024 / 1024
-  if (s.endsWith('Mi')) return parseInt(s) / 1024
-  if (s.endsWith('Gi')) return parseFloat(s)
-  if (s.endsWith('Ti')) return parseFloat(s) * 1024
-  return parseInt(s) / (1024 ** 3)
-}
-
 function r2(n: number): number { return Math.round(n * 100) / 100 }
 function r1(n: number): number { return Math.round(n * 10) / 10 }
 
 async function k8sGet(path: string): Promise<any> {
   const K8S = await resolveK8sUrl()
-  try {
-    const res = await fetch(`${K8S}${path}`, {
+  if (!K8S) throw new Error('Kubernetes API URL is unavailable')
+  const url = new URL(`${K8S}${path}`)
+  const items: any[] = []
+  for (let page = 0; page < 1000; page++) {
+    const res = await fetch(url.toString(), {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(K8S_TIMEOUT_MS),
       next: { revalidate: 0 },
     })
-    return res.ok ? res.json() : { items: [] }
-  } catch { return { items: [] } }
+    if (!res.ok) throw new Error(`Kubernetes ${path} returned HTTP ${res.status}`)
+    const data = await res.json()
+    if (path === '/version') return data
+    if (!Array.isArray(data?.items)) throw new Error(`Kubernetes ${path} returned an invalid list`)
+    items.push(...data.items)
+    const next = data.metadata?.continue
+    if (!next) return { ...data, items }
+    url.searchParams.set('continue', next)
+  }
+  throw new Error(`Kubernetes ${path} exceeded the pagination safety limit`)
 }
 
 async function promQuery(q: string): Promise<{ metric: Record<string, string>; value: [number, string] }[]> {
   const PROM = await resolvePromUrl()
-  try {
-    const res = await fetch(`${PROM}/api/v1/query?query=${encodeURIComponent(q)}`, {
-      signal: AbortSignal.timeout(K8S_TIMEOUT_MS),
-      next: { revalidate: 0 },
-    })
-    const j = await res.json()
-    return j?.data?.result ?? []
-  } catch { return [] }
+  if (!PROM) throw new Error('Prometheus URL is unavailable')
+  const res = await fetch(`${PROM}/api/v1/query?query=${encodeURIComponent(q)}`, {
+    signal: AbortSignal.timeout(K8S_TIMEOUT_MS),
+    next: { revalidate: 0 },
+  })
+  if (!res.ok) throw new Error(`Prometheus query returned HTTP ${res.status}`)
+  const body = await res.json()
+  if (body?.status !== 'success' || !Array.isArray(body?.data?.result)) throw new Error('Prometheus returned an invalid query response')
+  return body.data.result
 }
 
 // ?? Route ?????????????????????????????????????????????????????????????????????
@@ -67,6 +56,33 @@ export async function GET() {
   const MEM_PER_GIB_HR     = cfg.finops_mem_per_gib_hr     ?? 0.006
   const STORAGE_PER_GIB_MO = cfg.finops_storage_per_gib_mo ?? 0.05
 
+  let sourceResults: any[]
+  try {
+    sourceResults = await Promise.all([
+      k8sGet('/version'),
+      k8sGet('/api/v1/namespaces'),
+      k8sGet('/api/v1/nodes'),
+      k8sGet('/api/v1/pods?limit=1000'),
+      k8sGet('/api/v1/persistentvolumeclaims?limit=500'),
+      promQuery('sum by(namespace) (rate(container_cpu_usage_seconds_total{namespace!="",container!="POD",container!=""}[5m]))'),
+      promQuery('sum by(namespace) (container_memory_working_set_bytes{namespace!="",container!="POD",container!=""})'),
+      promQuery('kube_node_status_allocatable{resource="cpu"}'),
+      promQuery('kube_node_status_allocatable{resource="memory"}'),
+      promQuery('kube_node_status_condition{condition="Ready",status="true"}'),
+      promQuery('node_memory_MemAvailable_bytes'),
+      promQuery('node_memory_MemTotal_bytes'),
+      promQuery('1 - avg by(node, instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))'),
+      promQuery('count by(node) (kube_pod_info{node!=""})'),
+      promQuery('kubelet_volume_stats_used_bytes'),
+      promQuery('kubelet_volume_stats_capacity_bytes'),
+      promQuery('node_time_seconds - node_boot_time_seconds'),
+      promQuery('kube_node_status_allocatable{resource="pods"}'),
+    ])
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown FinOps source error'
+    return NextResponse.json({ error: `FinOps data unavailable: ${message}`, sourceStatus: 'unavailable' }, { status: 502 })
+  }
+
   const [
     versionData, nsData, nodesData, podsData, pvcData,
     cpuUsageByNs, memUsageByNs,
@@ -76,26 +92,7 @@ export async function GET() {
     volUsedRaw, volCapRaw,
     nodeUptimeRaw,
     podAllocatable,
-  ] = await Promise.all([
-    k8sGet('/version'),
-    k8sGet('/api/v1/namespaces'),
-    k8sGet('/api/v1/nodes'),
-    k8sGet('/api/v1/pods?limit=1000'),
-    k8sGet('/api/v1/persistentvolumeclaims?limit=500'),
-    promQuery('sum by(namespace) (rate(container_cpu_usage_seconds_total{namespace!="",container!="POD",container!=""}[5m]))'),
-    promQuery('sum by(namespace) (container_memory_working_set_bytes{namespace!="",container!="POD",container!=""})'),
-    promQuery('kube_node_status_allocatable{resource="cpu"}'),
-    promQuery('kube_node_status_allocatable{resource="memory"}'),
-    promQuery('kube_node_status_condition{condition="Ready",status="true"}'),
-    promQuery('node_memory_MemAvailable_bytes'),
-    promQuery('node_memory_MemTotal_bytes'),
-    promQuery('1 - avg by(node) (rate(node_cpu_seconds_total{mode="idle"}[5m]))'),
-    promQuery('count by(node) (kube_pod_info{node!=""})'),
-    promQuery('kubelet_volume_stats_used_bytes'),
-    promQuery('kubelet_volume_stats_capacity_bytes'),
-    promQuery('node_time_seconds - node_boot_time_seconds'),
-    promQuery('kube_node_status_allocatable{resource="pods"}'),
-  ])
+  ] = sourceResults
 
   // ?? 1. Cluster ????????????????????????????????????????????????????????????
   const clusterMeta = await resolveClusterMeta()
@@ -126,7 +123,6 @@ export async function GET() {
   for (const r of memAllocatable) memAllocByNode[r.metric.node] = parseFloat(r.value[1]) / (1024 ** 3)
 
   const cpuUsageByNodeMap: Record<string, number> = {}
-  for (const r of cpuNodeUsage) cpuUsageByNodeMap[r.metric.node] = parseFloat(r.value[1])
 
   const podCountByNode: Record<string, number> = {}
   for (const r of podCountsRaw) podCountByNode[r.metric.node] = parseInt(r.value[1])
@@ -145,6 +141,13 @@ export async function GET() {
     return instanceToNode[instance?.split(':')[0]] ?? instance?.split(':')[0]
   }
 
+  const knownNodeNames = new Set(((nodesData as any)?.items ?? []).map((item: any) => item.metadata?.name).filter(Boolean))
+  for (const sample of cpuNodeUsage) {
+    const nodeFromInstance = sample.metric?.instance ? resolveInst(sample.metric.instance) : ''
+    const nodeName = knownNodeNames.has(sample.metric?.node) ? sample.metric.node : nodeFromInstance
+    if (nodeName && knownNodeNames.has(nodeName)) cpuUsageByNodeMap[nodeName] = parseFloat(sample.value[1])
+  }
+
   const memAvailByNode: Record<string, number> = {}
   const memTotalByNode: Record<string, number> = {}
   const uptimeByNode:   Record<string, number> = {}
@@ -152,16 +155,32 @@ export async function GET() {
   for (const r of memTotalRaw)  memTotalByNode[resolveInst(r.metric.instance)]  = parseFloat(r.value[1]) / (1024 ** 3)
   for (const r of nodeUptimeRaw) uptimeByNode[resolveInst(r.metric.instance)]   = parseFloat(r.value[1]) / 3600
 
+  const missingNodeMetrics = ((nodesData as any)?.items ?? []).flatMap((item: any) => {
+    const name = item.metadata?.name ?? ''
+    const missing: string[] = []
+    if (!name || !(cpuAllocByNode[name] > 0)) missing.push('allocatable CPU')
+    if (!name || !(memAllocByNode[name] > 0)) missing.push('allocatable memory')
+    if (!name || !Object.prototype.hasOwnProperty.call(memAvailByNode, name) || !Object.prototype.hasOwnProperty.call(memTotalByNode, name) || !(memTotalByNode[name] > 0)) missing.push('memory usage')
+    return missing.length ? [`${name || 'unnamed node'}: ${missing.join(', ')}`] : []
+  })
+  if (missingNodeMetrics.length > 0) {
+    return NextResponse.json({ error: `Node capacity or memory data is incomplete (${missingNodeMetrics.join('; ')})`, sourceStatus: 'incomplete' }, { status: 502 })
+  }
+  const missingCpuUsageNodes = ((nodesData as any)?.items ?? [])
+    .map((item: any) => item.metadata?.name as string | undefined)
+    .filter((name: string | undefined): name is string => !!name && !Object.prototype.hasOwnProperty.call(cpuUsageByNodeMap, name))
+
   const nodes = ((nodesData as any)?.items ?? []).map((item: any) => {
     const name: string = item.metadata?.name ?? ''
     const labels: Record<string, string> = item.metadata?.labels ?? {}
     const cpuCores  = cpuAllocByNode[name] ?? 0
     const memGiB    = memAllocByNode[name] ?? 0
-    const cpuUsed   = cpuUsageByNodeMap[name] ?? 0
+    const cpuUsageRatio = cpuUsageByNodeMap[name]
     const memTotal  = memTotalByNode[name] ?? memGiB
     const memAvail  = memAvailByNode[name] ?? memGiB
-    const cpuUsagePct = cpuCores > 0 ? r1(Math.min(100, cpuUsed / cpuCores * 100)) : 0
-    const memUsagePct = memTotal > 0 ? r1(Math.min(100, (1 - memAvail / memTotal) * 100)) : 0
+    const cpuUsagePct = cpuCores > 0 && cpuUsageRatio !== undefined ? r1(Math.min(100, cpuUsageRatio * 100)) : null
+    const memUsedGiB = Math.max(0, memTotal - memAvail)
+    const memUsagePct = memGiB > 0 ? r1(Math.min(100, memUsedGiB / memGiB * 100)) : 0
 
     return {
       name,
@@ -204,12 +223,7 @@ export async function GET() {
     if (directOwner) { kind = directOwner.kind; wlName = directOwner.name }
     else if (rsOwner) { kind = 'Deployment'; wlName = rsOwner.name.replace(/-[a-z0-9]+$/, '') }
     const key = `${ns}/${kind}/${wlName}`
-    const containers: any[] = pod.spec?.containers ?? []
-    let cpuMillis = 0, memMiB = 0
-    for (const c of containers) {
-      cpuMillis += parseCpuMillis(c.resources?.requests?.cpu)
-      memMiB    += parseMemMiB(c.resources?.requests?.memory)
-    }
+    const { cpuMillis, memMiB } = getEffectivePodRequests(pod)
     if (!workloadMap[key]) workloadMap[key] = { namespace: ns, kind, cpuMillis: 0, memMiB: 0, podCount: 0 }
     workloadMap[key].cpuMillis += cpuMillis
     workloadMap[key].memMiB    += memMiB
@@ -238,21 +252,23 @@ export async function GET() {
   const byNamespace = Object.entries(nsTotals).map(([ns, v]) => {
     const cpuReq    = v.cpuMillis / 1000
     const memReq    = v.memMiB / 1024
-    const cpuActual = cpuActualByNs[ns] ?? 0
-    const memActual = memActualByNs[ns] ?? 0
+    const cpuActual = Object.prototype.hasOwnProperty.call(cpuActualByNs, ns) ? cpuActualByNs[ns]! : null
+    const memActual = Object.prototype.hasOwnProperty.call(memActualByNs, ns) ? memActualByNs[ns]! : null
     const costPerMo = r2((cpuReq * CPU_PER_CORE_HR + memReq * MEM_PER_GIB_HR) * HOURS_PER_MONTH)
 
-    // Efficiency: actual / requested (null if no requests set)
-    const cpuEfficiency = cpuReq > 0 ? Math.min(100, Math.round(cpuActual / cpuReq * 100)) : null
-    const memEfficiency = memReq > 0 ? Math.min(100, Math.round(memActual / memReq * 100)) : null
-    const overallEfficiency = cpuEfficiency !== null && memEfficiency !== null
-      ? Math.round((cpuEfficiency * 0.5 + memEfficiency * 0.5))
-      : cpuEfficiency ?? memEfficiency ?? null
+    // Missing usage series means unknown, not zero utilization.
+    const cpuEfficiency = cpuReq > 0 && cpuActual !== null ? Math.min(100, Math.round(cpuActual / cpuReq * 100)) : null
+    const memEfficiency = memReq > 0 && memActual !== null ? Math.min(100, Math.round(memActual / memReq * 100)) : null
+    const overallEfficiency = calculateWeightedEfficiency({
+      cpuRequested: cpuReq, cpuActual,
+      memoryRequestedGiB: memReq, memoryActualGiB: memActual,
+      cpuRate: CPU_PER_CORE_HR, memoryRate: MEM_PER_GIB_HR,
+    })
 
     // Waste = requested but not used
-    const cpuWastedCores = cpuReq > 0 ? Math.max(0, cpuReq - cpuActual) : 0
-    const memWastedGiB   = memReq > 0 ? Math.max(0, memReq - memActual) : 0
-    const wastedPerMo    = r2((cpuWastedCores * CPU_PER_CORE_HR + memWastedGiB * MEM_PER_GIB_HR) * HOURS_PER_MONTH)
+    const cpuWastedCores = cpuActual === null ? (cpuReq === 0 ? 0 : null) : cpuReq > 0 ? Math.max(0, cpuReq - cpuActual) : 0
+    const memWastedGiB   = memActual === null ? (memReq === 0 ? 0 : null) : memReq > 0 ? Math.max(0, memReq - memActual) : 0
+    const wastedPerMo    = cpuWastedCores === null || memWastedGiB === null ? null : r2((cpuWastedCores * CPU_PER_CORE_HR + memWastedGiB * MEM_PER_GIB_HR) * HOURS_PER_MONTH)
     const costSharePct   = totalCostPerMo > 0 ? r1(costPerMo / totalCostPerMo * 100) : 0
 
     return {
@@ -261,8 +277,8 @@ export async function GET() {
       podCount: v.podCount,
       cpuRequestedCores: r2(cpuReq),
       memRequestedGiB:   r2(memReq),
-      cpuActualCores:    r2(cpuActual),
-      memActualGiB:      r2(memActual),
+      cpuActualCores:    cpuActual === null ? null : r2(cpuActual),
+      memActualGiB:      memActual === null ? null : r2(memActual),
       cpuEfficiency,
       memEfficiency,
       overallEfficiency,
@@ -272,12 +288,25 @@ export async function GET() {
     }
   }).sort((a, b) => b.costPerMo - a.costPerMo)
 
-  const totalWastedPerMo  = byNamespace.reduce((s, n) => s + n.wastedPerMo, 0)
+  const usageComplete = byNamespace.every(n => n.wastedPerMo !== null)
+  const totalWastedPerMo  = usageComplete ? byNamespace.reduce((s, n) => s + (n.wastedPerMo ?? 0), 0) : null
   const nsWithEff         = byNamespace.filter(n => n.overallEfficiency !== null)
-  const overallCpuEff     = nsWithEff.length > 0
-    ? Math.round(nsWithEff.reduce((s, n) => s + (n.cpuEfficiency ?? 0), 0) / nsWithEff.length) : 0
-  const overallMemEff     = nsWithEff.length > 0
-    ? Math.round(nsWithEff.reduce((s, n) => s + (n.memEfficiency ?? 0), 0) / nsWithEff.length) : 0
+  const cpuReqTotal = byNamespace.reduce((sum, ns) => sum + ns.cpuRequestedCores, 0)
+  const memReqTotal = byNamespace.reduce((sum, ns) => sum + ns.memRequestedGiB, 0)
+  const cpuUsageComplete = byNamespace.every(ns => ns.cpuRequestedCores === 0 || ns.cpuActualCores !== null)
+  const memUsageComplete = byNamespace.every(ns => ns.memRequestedGiB === 0 || ns.memActualGiB !== null)
+  const overallCpuEff = cpuUsageComplete && cpuReqTotal > 0
+    ? Math.min(100, Math.round(byNamespace.reduce((sum, ns) => sum + (ns.cpuActualCores ?? 0), 0) / cpuReqTotal * 100)) : null
+  const overallMemEff = memUsageComplete && memReqTotal > 0
+    ? Math.min(100, Math.round(byNamespace.reduce((sum, ns) => sum + (ns.memActualGiB ?? 0), 0) / memReqTotal * 100)) : null
+  const overallResourceEfficiency = calculateWeightedEfficiency({
+    cpuRequested: cpuReqTotal,
+    cpuActual: cpuUsageComplete ? byNamespace.reduce((sum, ns) => sum + (ns.cpuActualCores ?? 0), 0) : null,
+    memoryRequestedGiB: memReqTotal,
+    memoryActualGiB: memUsageComplete ? byNamespace.reduce((sum, ns) => sum + (ns.memActualGiB ?? 0), 0) : null,
+    cpuRate: CPU_PER_CORE_HR,
+    memoryRate: MEM_PER_GIB_HR,
+  })
 
   // ?? 4. Storage ????????????????????????????????????????????????????????????
   const volUsedMap: Record<string, number> = {}
@@ -297,24 +326,29 @@ export async function GET() {
     const specCapStr   = pvc.spec?.resources?.requests?.storage ?? '0'
     const statusCapStr = pvc.status?.capacity?.storage ?? specCapStr
     const capacityGiB  = parseCapGiB(statusCapStr) || parseCapGiB(specCapStr)
-    const usedGiB      = volUsedMap[key] ?? 0
+    const status       = pvc.status?.phase ?? 'Unknown'
+    const isBound      = status === 'Bound'
+    const hasUsage      = Object.prototype.hasOwnProperty.call(volUsedMap, key)
+    const usedGiB      = isBound && hasUsage ? r2(volUsedMap[key]!) : null
     const capFromProm  = volCapMap[key] ?? 0
-    const effectiveCap = capFromProm > 0 ? capFromProm : capacityGiB
-    const usagePct     = effectiveCap > 0 ? Math.min(100, Math.round(usedGiB / effectiveCap * 100)) : 0
-    const costPerMo    = r2(effectiveCap * STORAGE_PER_GIB_MO)
+    const usageCapacityGiB = capFromProm > 0 ? capFromProm : capacityGiB
+    const usagePct     = usedGiB !== null && usageCapacityGiB > 0 ? Math.min(100, Math.round(usedGiB / usageCapacityGiB * 100)) : null
+    const costPerMo    = isBound ? r2(capacityGiB * STORAGE_PER_GIB_MO) : 0
     return {
       name, namespace: ns,
-      capacityGiB: r2(effectiveCap || capacityGiB),
-      usedGiB: r2(usedGiB),
+      capacityGiB: r2(capacityGiB),
+      usedGiB,
       usagePct,
       storageClass: sc,
-      status: pvc.status?.phase ?? 'Unknown',
+      status,
       costPerMo,
     }
   }).sort((a: any, b: any) => b.costPerMo - a.costPerMo)
 
-  const totalStorageCap    = pvcs.reduce((s: number, p: any) => s + p.capacityGiB, 0)
-  const totalStorageUsed   = pvcs.reduce((s: number, p: any) => s + p.usedGiB, 0)
+  const boundPvcs = pvcs.filter((pvc: any) => pvc.status === 'Bound')
+  const storageUsageComplete = boundPvcs.every((pvc: any) => pvc.usedGiB !== null)
+  const totalStorageCap    = boundPvcs.reduce((s: number, p: any) => s + p.capacityGiB, 0)
+  const totalStorageUsed   = storageUsageComplete ? boundPvcs.reduce((s: number, p: any) => s + (p.usedGiB ?? 0), 0) : null
   const totalStorageCostMo = pvcs.reduce((s: number, p: any) => s + p.costPerMo, 0)
 
   // ?? 5. Optimizations ?????????????????????????????????????????????????????
@@ -328,6 +362,7 @@ export async function GET() {
     wastedCpuCores?: number; wastedMemGiB?: number
     podCount?: number; workloadCount?: number
     rightSizeSavings?: number; cpuSavings?: number; memSavings?: number
+    missingCpuRequests?: boolean; missingMemoryRequests?: boolean
     kubectl?: string
     priorityScore?: number  // 0-100, higher = act first
   }
@@ -335,14 +370,10 @@ export async function GET() {
 
   // ?? Per-namespace: severe over-provisioning ??????????????????????????????
   for (const ns of byNamespace) {
-    if (ns.overallEfficiency !== null && ns.overallEfficiency < 25 && ns.costPerMo > 3) {
+    if (ns.overallEfficiency !== null && ns.cpuActualCores !== null && ns.memActualGiB !== null && ns.wastedPerMo !== null && ns.overallEfficiency < 25 && ns.costPerMo > 3) {
       const sev: 'critical' | 'warning' = ns.overallEfficiency < 10 ? 'critical' : 'warning'
-      const ratio = Math.round(100 / Math.max(1, ns.overallEfficiency))
       const cpuWasted  = Math.max(0, ns.cpuRequestedCores - ns.cpuActualCores)
       const memWasted  = Math.max(0, ns.memRequestedGiB   - ns.memActualGiB)
-      // Recommend: 2? actual + 20% headroom, capped at current
-      const recCpuM    = Math.round(Math.min(ns.cpuRequestedCores, ns.cpuActualCores * 2.2) * 1000)
-      const recMemMiB  = Math.round(Math.min(ns.memRequestedGiB * 1024, ns.memActualGiB * 1024 * 2.2))
       const cpuSave    = r2(cpuWasted * 0.6 * CPU_PER_CORE_HR * HOURS_PER_MONTH)  // conservative 60% of waste
       const memSave    = r2(memWasted * 0.6 * MEM_PER_GIB_HR  * HOURS_PER_MONTH)
       const totalSave  = r2(cpuSave + memSave)
@@ -350,54 +381,36 @@ export async function GET() {
       optimizations.push({
         type: 'over-provisioned', namespace: ns.namespace, workload: '(all workloads)',
         currentCost: ns.costPerMo, savingsPotential: totalSave,
-        reason: `Overall efficiency ${ns.overallEfficiency}% ? requests are ~${ratio}? actual usage across ${ns.workloadCount} workload${ns.workloadCount !== 1 ? 's' : ''} (${ns.podCount} pods). Right-sizing to 2? peak would reclaim ${fmt$(totalSave)}/mo.`,
+        reason: `Namespace-level requests exceed the current usage sample across ${ns.workloadCount} workloads (${ns.podCount} pods). Estimated request-cost reduction is ${fmt$(totalSave)}/mo; validate peak usage and calculate targets per workload before changing requests.`,
         severity: sev,
         cpuRequested: ns.cpuRequestedCores, cpuActual: r2(ns.cpuActualCores), cpuEfficiency: ns.cpuEfficiency,
         memRequestedGiB: ns.memRequestedGiB, memActualGiB: r2(ns.memActualGiB), memEfficiency: ns.memEfficiency,
         wastedCpuCores: r2(cpuWasted), wastedMemGiB: r2(memWasted),
-        recommendedCpuM: recCpuM, recommendedMemMiB: recMemMiB,
         rightSizeSavings: totalSave, cpuSavings: cpuSave, memSavings: memSave,
         podCount: ns.podCount, workloadCount: ns.workloadCount,
-        kubectl: `kubectl set resources -n ${ns.namespace} deployment --all --requests=cpu=${recCpuM}m,memory=${recMemMiB}Mi`,
         priorityScore: priority,
       })
     }
 
-    // No resource requests (any namespace)
-    if (ns.cpuRequestedCores === 0 && ns.podCount > 0) {
-      optimizations.push({
-        type: 'no-requests', namespace: ns.namespace, workload: '(all workloads)',
-        currentCost: 0, savingsPotential: 0,
-        reason: `${ns.podCount} pod${ns.podCount !== 1 ? 's' : ''} have no CPU/memory requests set ? cost attribution is impossible and pods may starve during node pressure. Add LimitRange or per-workload requests.`,
-        severity: 'warning',
-        podCount: ns.podCount, workloadCount: ns.workloadCount,
-        kubectl: `kubectl get pods -n ${ns.namespace} -o json | jq '.items[] | select(.spec.containers[].resources.requests == null) | .metadata.name'`,
-        priorityScore: 40,
-      })
-    }
   }
 
   // ?? Per-namespace: CPU-specific over-provisioning ??????????????????????
   for (const ns of byNamespace) {
     const alreadyFlagged = optimizations.find(o => o.namespace === ns.namespace && o.type === 'over-provisioned')
-    if (!alreadyFlagged && ns.cpuEfficiency !== null && ns.cpuEfficiency < 20 && ns.cpuRequestedCores > 1) {
+    if (!alreadyFlagged && ns.cpuEfficiency !== null && ns.cpuActualCores !== null && ns.memActualGiB !== null && ns.cpuEfficiency < 20 && ns.cpuRequestedCores > 1) {
       const cpuWasted  = Math.max(0, ns.cpuRequestedCores - ns.cpuActualCores)
       const saving     = r2(cpuWasted * 0.6 * CPU_PER_CORE_HR * HOURS_PER_MONTH)
-      const reducePct  = Math.round((1 - ns.cpuActualCores / ns.cpuRequestedCores) * 75)
-      const recCpuM    = Math.round(Math.min(ns.cpuRequestedCores, ns.cpuActualCores * 2.2) * 1000)
       const priority   = Math.min(100, Math.round((1 - ns.cpuEfficiency / 100) * 70 + (saving / Math.max(1, ns.costPerMo)) * 30))
       optimizations.push({
         type: 'cpu-over-provisioned', namespace: ns.namespace, workload: '(all workloads)',
         currentCost: ns.costPerMo, savingsPotential: saving,
-        reason: `CPU requests ${ns.cpuRequestedCores}c, actual usage ${r2(ns.cpuActualCores)}c (${ns.cpuEfficiency}% efficiency). Wasting ~${r2(cpuWasted)} cores. Reduce CPU requests by ~${reducePct}% to save ${fmt$(saving)}/mo.`,
+        reason: `Namespace CPU requests are ${ns.cpuRequestedCores}c versus a current usage sample of ${r2(ns.cpuActualCores)}c (${ns.cpuEfficiency}% efficiency). Estimated request-cost reduction is ${fmt$(saving)}/mo; validate peak usage and calculate targets per workload before changing requests.`,
         severity: 'warning',
         cpuRequested: ns.cpuRequestedCores, cpuActual: r2(ns.cpuActualCores), cpuEfficiency: ns.cpuEfficiency,
         memRequestedGiB: ns.memRequestedGiB, memActualGiB: r2(ns.memActualGiB), memEfficiency: ns.memEfficiency,
         wastedCpuCores: r2(cpuWasted),
-        recommendedCpuM: recCpuM,
         cpuSavings: saving, rightSizeSavings: saving,
         podCount: ns.podCount, workloadCount: ns.workloadCount,
-        kubectl: `kubectl set resources -n ${ns.namespace} deployment --all --requests=cpu=${recCpuM}m`,
         priorityScore: priority,
       })
     }
@@ -406,65 +419,27 @@ export async function GET() {
   // ?? Per-namespace: memory-specific over-provisioning ???????????????????
   for (const ns of byNamespace) {
     const alreadyFlagged = optimizations.find(o => o.namespace === ns.namespace && (o.type === 'over-provisioned' || o.type === 'cpu-over-provisioned'))
-    if (!alreadyFlagged && ns.memEfficiency !== null && ns.memEfficiency < 20 && ns.memRequestedGiB > 0.5) {
+    if (!alreadyFlagged && ns.memEfficiency !== null && ns.cpuActualCores !== null && ns.memActualGiB !== null && ns.memEfficiency < 20 && ns.memRequestedGiB > 0.5) {
       const memWasted  = Math.max(0, ns.memRequestedGiB - ns.memActualGiB)
       const saving     = r2(memWasted * 0.6 * MEM_PER_GIB_HR * HOURS_PER_MONTH)
-      const reducePct  = Math.round((1 - ns.memActualGiB / ns.memRequestedGiB) * 75)
-      const recMemMiB  = Math.round(Math.min(ns.memRequestedGiB * 1024, ns.memActualGiB * 1024 * 2.2))
       optimizations.push({
         type: 'mem-over-provisioned', namespace: ns.namespace, workload: '(all workloads)',
         currentCost: ns.costPerMo, savingsPotential: saving,
-        reason: `Memory requests ${r1(ns.memRequestedGiB)} GiB, actual usage ${r2(ns.memActualGiB)} GiB (${ns.memEfficiency}% efficiency). Wasting ~${r2(memWasted)} GiB. Reduce memory requests by ~${reducePct}%.`,
+        reason: `Namespace memory requests are ${r1(ns.memRequestedGiB)} GiB versus a current usage sample of ${r2(ns.memActualGiB)} GiB (${ns.memEfficiency}% efficiency). Estimated request-cost reduction is ${fmt$(saving)}/mo; validate peak usage and calculate targets per workload before changing requests.`,
         severity: 'warning',
         cpuRequested: ns.cpuRequestedCores, cpuActual: r2(ns.cpuActualCores), cpuEfficiency: ns.cpuEfficiency,
         memRequestedGiB: ns.memRequestedGiB, memActualGiB: r2(ns.memActualGiB), memEfficiency: ns.memEfficiency,
         wastedMemGiB: r2(memWasted),
-        recommendedMemMiB: recMemMiB,
         memSavings: saving, rightSizeSavings: saving,
         podCount: ns.podCount, workloadCount: ns.workloadCount,
-        kubectl: `kubectl set resources -n ${ns.namespace} deployment --all --requests=memory=${recMemMiB}Mi`,
         priorityScore: Math.min(100, Math.round((1 - ns.memEfficiency / 100) * 60 + (saving / Math.max(1, ns.costPerMo)) * 40)),
       })
     }
   }
 
-  // ?? Per-workload: top 5 individual wasters ??????????????????????????????
-  // Build per-workload actual usage from Prometheus namespace totals distributed by cost share
-  for (const wl of byWorkload.slice(0, 20)) {
-    const ns = byNamespace.find(n => n.namespace === wl.namespace)
-    if (!ns || ns.overallEfficiency === null) continue
-    // Already covered by namespace-level? Only emit if workload is >30% of ns cost and efficiency < 20%
-    const wlShareOfNs = ns.costPerMo > 0 ? wl.costPerMo / ns.costPerMo : 0
-    if (wlShareOfNs < 0.3 || wl.costPerMo < 2) continue
-    const alreadyCovered = optimizations.find(o => o.namespace === wl.namespace && (o.type === 'over-provisioned' || o.type === 'cpu-over-provisioned'))
-    if (!alreadyCovered) continue   // no point duplicating if ns not flagged
-    if (ns.overallEfficiency >= 20) continue
-    // Workload-specific recommendation using ns efficiency as proxy
-    const eff = ns.overallEfficiency / 100
-    const wlCpuActual = r2(wl.cpuCores * eff)
-    const wlMemActual = r2(wl.memGiB   * eff)
-    const recCpuM     = Math.round(wl.cpuCores * Math.min(1, eff * 2.2) * 1000)
-    const recMemMiB   = Math.round(wl.memGiB   * Math.min(1, eff * 2.2) * 1024)
-    const wlSave      = r2(wl.costPerMo * (1 - eff * 2.2) * 0.6)
-    if (wlSave < 0.5) continue
-    optimizations.push({
-      type: 'workload-rightsizing', namespace: wl.namespace, workload: `${wl.kind}/${wl.name}`,
-      currentCost: wl.costPerMo, savingsPotential: wlSave,
-      reason: `${wl.kind} "${wl.name}" requests ${wl.cpuCores}c CPU / ${wl.memGiB} GiB mem across ${wl.podCount} pod${wl.podCount !== 1 ? 's' : ''}. Estimated actual: ~${wlCpuActual}c / ~${wlMemActual} GiB. Right-size to save ~${fmt$(wlSave)}/mo.`,
-      severity: 'info',
-      cpuRequested: wl.cpuCores, cpuActual: wlCpuActual, cpuEfficiency: ns.cpuEfficiency,
-      memRequestedGiB: wl.memGiB, memActualGiB: wlMemActual, memEfficiency: ns.memEfficiency,
-      recommendedCpuM: recCpuM, recommendedMemMiB: recMemMiB,
-      rightSizeSavings: wlSave,
-      podCount: wl.podCount,
-      kubectl: `kubectl set resources -n ${wl.namespace} ${wl.kind.toLowerCase()} ${wl.name} --requests=cpu=${recCpuM}m,memory=${recMemMiB}Mi`,
-      priorityScore: Math.round(wlSave / Math.max(1, wl.costPerMo) * 60 + (1 - eff) * 40),
-    })
-  }
-
   // ?? Storage near full ????????????????????????????????????????????????????
   for (const pvc of pvcs as any[]) {
-    if (pvc.usagePct > 80) {
+    if (pvc.status === 'Bound' && pvc.usagePct !== null && pvc.usagePct > 80) {
       const headroomGiB = r2(pvc.capacityGiB - pvc.usedGiB)
       const expandTo    = Math.ceil(pvc.capacityGiB * (pvc.usagePct > 90 ? 2 : 1.5))
       optimizations.push({
@@ -478,20 +453,20 @@ export async function GET() {
     }
   }
 
-  // ?? Zero-cost workloads: no requests set ????????????????????????????????
-  const noReqWorkloads = byWorkload.filter(w => w.costPerMo === 0 && w.podCount > 0).slice(0, 3)
-  for (const w of noReqWorkloads) {
-    if (!optimizations.find(o => o.namespace === w.namespace && o.type === 'no-requests')) {
-      optimizations.push({
-        type: 'no-requests', namespace: w.namespace, workload: `${w.kind}/${w.name}`,
-        currentCost: 0, savingsPotential: 0,
-        reason: `No resource requests set on ${w.kind} "${w.name}" (${w.podCount} pod${w.podCount !== 1 ? 's' : ''}). Add CPU/memory requests for scheduler decisions, HPA, and cost tracking.`,
-        severity: 'info',
-        podCount: w.podCount,
-        kubectl: `kubectl set resources -n ${w.namespace} ${w.kind.toLowerCase()} ${w.name} --requests=cpu=100m,memory=128Mi --limits=cpu=500m,memory=512Mi`,
-        priorityScore: 20,
-      })
-    }
+  const missingRequestWorkloads = byWorkload.filter(w => w.podCount > 0 && (w.cpuCores === 0 || w.memGiB === 0))
+  for (const workload of missingRequestWorkloads) {
+    const missingCpuRequests = workload.cpuCores === 0
+    const missingMemoryRequests = workload.memGiB === 0
+    optimizations.push({
+      type: 'no-requests', namespace: workload.namespace, workload: `${workload.kind}/${workload.name}`,
+      currentCost: workload.costPerMo, savingsPotential: 0,
+      reason: `Missing ${[missingCpuRequests && 'CPU', missingMemoryRequests && 'memory'].filter(Boolean).join(' and ')} requests on ${workload.kind} "${workload.name}" across ${workload.podCount} pods. Set workload-appropriate values for scheduling, autoscaling, and cost attribution.`,
+      severity: 'warning',
+      podCount: workload.podCount,
+      missingCpuRequests,
+      missingMemoryRequests,
+      priorityScore: 40,
+    })
   }
 
   const sevOrder = { critical: 0, warning: 1, info: 2 }
@@ -506,9 +481,11 @@ export async function GET() {
       totalPerMo:    r2(totalCostPerMo + totalStorageCostMo),
       computePerMo:  r2(totalCostPerMo),
       storagePerMo:  r2(totalStorageCostMo),
-      wastedPerMo:   r2(totalWastedPerMo),
+      wastedPerMo:   totalWastedPerMo === null ? null : r2(totalWastedPerMo),
       cpuEfficiency: overallCpuEff,
       memEfficiency: overallMemEff,
+      resourceEfficiency: overallResourceEfficiency,
+      usageComplete,
       byNamespace,
       byWorkload: byWorkload.slice(0, 25),
       ratesUsed: { cpuPerCoreHr: CPU_PER_CORE_HR, memPerGiBHr: MEM_PER_GIB_HR, storagePerGiBMo: STORAGE_PER_GIB_MO },
@@ -516,11 +493,13 @@ export async function GET() {
     storage: {
       totalPVCs: pvcs.length,
       totalCapacityGiB: r2(totalStorageCap),
-      totalUsedGiB:     r2(totalStorageUsed),
+      totalUsedGiB:     totalStorageUsed === null ? null : r2(totalStorageUsed),
+      usageComplete: storageUsageComplete,
       costPerMo:        r2(totalStorageCostMo),
       pvcs,
     },
     totalPodCount,
     optimizations,
+    dataQuality: { scanComplete: true, usageComplete, storageUsageComplete, nodeUsageComplete: missingCpuUsageNodes.length === 0, missingCpuUsageNodes },
   })
 }

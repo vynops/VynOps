@@ -2,6 +2,7 @@
 import { resolveK8sUrl, resolvePromUrl , K8S_TIMEOUT_MS } from '@/lib/cluster'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
+import { hasCompleteDailyWindow } from '@/lib/analytics-math'
 
 const SKIP_NS = new Set(['kube-system', 'kube-public', 'kube-node-lease'])
 
@@ -250,7 +251,10 @@ export async function GET(req: Request) {
     const availHistMap: Record<string, { ts: number; value: number }[]> = {}
     for (const r of (availHistAllData as any[])) {
       const key = `${r.metric.namespace}/${r.metric.deployment}`
-      availHistMap[key] = r.values
+      const points = (r.values ?? []).filter((point: { ts: number; value: number }) =>
+        Number.isFinite(point.ts) && Number.isFinite(point.value)
+      )
+      if (!availHistMap[key] || points.length > availHistMap[key]!.length) availHistMap[key] = points
     }
 
     const slaServices = allDeploys.map((d: any) => {
@@ -262,31 +266,32 @@ export async function GET(req: Request) {
       const errBudgRate = Math.max((100 - slaTarget) / 100, 0.0001)  // guard div-by-zero
       const allowedDown = errBudgRate * BUDGET_WINDOW_MINS
 
-      // Multi-window availability (fall back to current if Prometheus has no data)
-      const avail1h  = avail1hMap[key]  ?? pct
-      const avail6h  = avail6hMap[key]  ?? pct
-      const avail30d = avail30dMap[key] ?? pct
+      const historyPts = availHistMap[key] ?? []
+      const historyComplete = hasCompleteDailyWindow(historyPts)
+      const avail1h  = avail1hMap[key] ?? null
+      const avail6h  = avail6hMap[key] ?? null
+      const avail30d = historyComplete ? avail30dMap[key] ?? null : null
 
-      // Status is driven by 30d rolling availability, not instantaneous replica snapshot
-      const status = avail30d >= slaTarget ? 'healthy' : avail30d >= slaTarget - 0.5 ? 'at-risk' : 'breached'
+      const status = avail30d === null ? 'unknown' : avail30d >= slaTarget ? 'healthy' : avail30d >= slaTarget - 0.5 ? 'at-risk' : 'breached'
 
       // Burn rates: error rate in window vs steady-state error budget rate
-      // burn_rate = 1 → normal consumption; >14.4 in 1h → exhausts 30d budget in 1h
-      const burnRate1h = avail1h < 100
+      // burn_rate = 1 means expected consumption of the configured error budget.
+      const burnRate1h = avail1h !== null && avail1h < 100
         ? parseFloat(((1 - avail1h / 100) / errBudgRate).toFixed(2))
-        : 0
-      const burnRate6h = avail6h < 100
+        : avail1h === null ? null : 0
+      const burnRate6h = avail6h !== null && avail6h < 100
         ? parseFloat(((1 - avail6h / 100) / errBudgRate).toFixed(2))
-        : 0
+        : avail6h === null ? null : 0
+      const burnDataAvailable = burnRate1h !== null || burnRate6h !== null
 
       // Error budget remaining in minutes (30d rolling)
-      const actualDownMins30d   = (1 - avail30d / 100) * BUDGET_WINDOW_MINS
-      const budgetRemainingMins = parseFloat((allowedDown - actualDownMins30d).toFixed(1))
-      const budgetUsedPct       = Math.min(200, Math.max(0, Math.round((actualDownMins30d / allowedDown) * 100)))
+      const actualDownMins30d   = avail30d === null ? null : (1 - avail30d / 100) * BUDGET_WINDOW_MINS
+      const budgetRemainingMins = actualDownMins30d === null ? null : parseFloat((allowedDown - actualDownMins30d).toFixed(1))
+      const budgetUsedPct       = actualDownMins30d === null ? null : Math.min(200, Math.max(0, Math.round((actualDownMins30d / allowedDown) * 100)))
 
       // Burn classification (Google SRE thresholds)
-      const fastBurn = burnRate1h > 14.4 || burnRate6h > 6
-      const slowBurn = !fastBurn && (burnRate1h > 3 || burnRate6h > 1.5)
+      const fastBurn = (burnRate1h !== null && burnRate1h > 14.4) || (burnRate6h !== null && burnRate6h > 6)
+      const slowBurn = !fastBurn && ((burnRate1h !== null && burnRate1h > 3) || (burnRate6h !== null && burnRate6h > 1.5))
 
       return {
         name:               d.metadata.name as string,
@@ -296,17 +301,20 @@ export async function GET(req: Request) {
         availability:       pct,
         slaTarget:          slaTarget,
         slaStatus:          status,
+        historyComplete,
+        historyDays:        historyPts.length,
         budgetUsedPct,
         budgetRemainingMins,
         updatedAt:          d.metadata.creationTimestamp as string,
-        avail1h:            parseFloat(avail1h.toFixed(3)),
-        avail6h:            parseFloat(avail6h.toFixed(3)),
-        avail30d:           parseFloat(avail30d.toFixed(3)),
+        avail1h:            avail1h === null ? null : parseFloat(avail1h.toFixed(3)),
+        avail6h:            avail6h === null ? null : parseFloat(avail6h.toFixed(3)),
+        avail30d:           avail30d === null ? null : parseFloat(avail30d.toFixed(3)),
         burnRate1h,
         burnRate6h,
+        burnDataAvailable,
         fastBurn,
         slowBurn,
-        historyPts:         availHistMap[key] ?? [],
+        historyPts,
       }
     })
 

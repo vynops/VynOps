@@ -16,17 +16,19 @@ import {
 import { format, formatDistanceToNow } from 'date-fns'
 import { useLiveData } from '@/hooks/useLiveData'
 import { cn } from '@/lib/utils'
+import { estimateBudgetExhaustionHours } from '@/lib/analytics-math'
 
 // -- Types -----------------------------------------------------------------
 interface TsPoint { ts: number; value: number; forecast?: boolean }
 interface DayCount  { date: string; count: number }
 interface SlaService {
   name: string; namespace: string; desired: number; available: number
-  availability: number; slaTarget: number; slaStatus: string
-  budgetUsedPct: number; budgetRemainingMins: number; updatedAt: string
-  avail1h: number; avail6h: number; avail30d: number
-  burnRate1h: number; burnRate6h: number
-  fastBurn: boolean; slowBurn: boolean
+  availability: number; slaTarget: number; slaStatus: 'healthy' | 'at-risk' | 'breached' | 'unknown'
+  historyComplete: boolean; historyDays: number
+  budgetUsedPct: number | null; budgetRemainingMins: number | null; updatedAt: string
+  avail1h: number | null; avail6h: number | null; avail30d: number | null
+  burnRate1h: number | null; burnRate6h: number | null
+  burnDataAvailable: boolean; fastBurn: boolean; slowBurn: boolean
   historyPts: { ts: number; value: number }[]
 }
 interface AnalyticsData {
@@ -66,9 +68,9 @@ function exportSlaCSV(sla: SlaService[]) {
   const headers = ['Service','Namespace','SLA Target','Availability Now','1h Avail','6h Avail','30d Avail','Status','Budget Used %','Budget Remaining (min)','Burn Rate 1h','Burn Rate 6h','Replicas']
   const rows = sla.map(s => [
     s.name, s.namespace, `${s.slaTarget}%`,
-    `${s.availability.toFixed(2)}%`, `${s.avail1h.toFixed(3)}%`, `${s.avail6h.toFixed(3)}%`, `${s.avail30d.toFixed(3)}%`,
-    s.slaStatus, `${s.budgetUsedPct}%`, s.budgetRemainingMins.toFixed(1),
-    `${s.burnRate1h}x`, `${s.burnRate6h}x`, `${s.available}/${s.desired}`,
+    `${s.availability.toFixed(2)}%`, s.avail1h === null ? '' : `${s.avail1h.toFixed(3)}%`, s.avail6h === null ? '' : `${s.avail6h.toFixed(3)}%`, s.avail30d === null ? '' : `${s.avail30d.toFixed(3)}%`,
+    s.slaStatus, s.budgetUsedPct === null ? '' : `${s.budgetUsedPct}%`, s.budgetRemainingMins === null ? '' : s.budgetRemainingMins.toFixed(1),
+    s.burnRate1h === null ? '' : `${s.burnRate1h}x`, s.burnRate6h === null ? '' : `${s.burnRate6h}x`, `${s.available}/${s.desired}`,
   ])
   const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
   const a = document.createElement('a')
@@ -109,15 +111,6 @@ function toAnalyticsWindow(tr: string): WinOption {
 }
 
 // -- Helpers ----------------------------------------------------------------
-const BAND_LABEL: Record<string, string> = {
-  elite: 'Elite', high: 'High', medium: 'Medium', low: 'Low',
-}
-const BAND_CLR: Record<string, string> = {
-  elite: 'text-success bg-success/10 border-success/20',
-  high:  'text-teal-400 bg-teal-500/10 border-teal-500/20',
-  medium:'text-warning bg-warning/10 border-warning/20',
-  low:   'text-danger  bg-danger/10  border-danger/20',
-}
 const SLA_CLR: Record<string, string> = {
   healthy: 'text-success', 'at-risk': 'text-warning', breached: 'text-danger',
 }
@@ -191,15 +184,20 @@ function AnalyticsInner() {
     ...infra.memory.forecast,
   ], [infra.memory.history, infra.memory.forecast])
 
-  const slaBreached = sla.filter(s => s.slaStatus === 'breached').length
-  const slaAtRisk   = sla.filter(s => s.slaStatus === 'at-risk').length
+  const slaAssessed = sla.filter(s => s.slaStatus !== 'unknown')
+  const slaUnknown = sla.length - slaAssessed.length
+  const slaHealthy = slaAssessed.filter(s => s.slaStatus === 'healthy').length
+  const slaBreached = slaAssessed.filter(s => s.slaStatus === 'breached').length
+  const slaAtRisk = slaAssessed.filter(s => s.slaStatus === 'at-risk').length
+  const burnAssessed = sla.filter(s => s.burnDataAvailable)
+  const fastBurnCount = burnAssessed.filter(s => s.fastBurn).length
 
   // Fleet 30d compliance trend — average availability across all services per day
   const fleetHistory = useMemo(() => {
-    if (!sla.some(s => s.historyPts && s.historyPts.length > 2)) return []
+    if (!sla.some(s => s.historyComplete && s.historyPts.length > 2)) return []
     // Pre-build Map<ts, value[]> to avoid O(n²) .find() in render
     const tsValMap = new Map<number, number[]>()
-    sla.forEach(s => (s.historyPts ?? []).forEach(p => {
+    sla.filter(s => s.historyComplete).forEach(s => (s.historyPts ?? []).forEach(p => {
       const arr = tsValMap.get(p.ts)
       if (arr) arr.push(p.value)
       else tsValMap.set(p.ts, [p.value])
@@ -222,7 +220,7 @@ function AnalyticsInner() {
             <BarChart3 className="w-5 h-5 text-brand-400" /> Analytics &amp; SLA
           </h1>
           <p className="text-xs text-surface-500 mt-0.5">
-            {activeCluster && <><span className="text-surface-300 font-medium">{activeCluster.name ?? activeCluster.displayName}</span>{' · '}</>}DORA metrics · SLA tracking · capacity forecasting · live cluster data
+            {activeCluster && <><span className="text-surface-300 font-medium">{activeCluster.name ?? activeCluster.displayName}</span>{' · '}</>}Rollout activity · deployment health · SLA tracking · capacity forecasting · live cluster data
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -263,7 +261,7 @@ function AnalyticsInner() {
             </button>
           )}
           {t === 'Latency (p95)' && !latData.hasData && (
-            <span className="ml-1 text-2xs px-1.5 py-0.5 bg-surface-800 text-surface-500 border border-surface-700 rounded-full">awaiting traffic</span>
+            <span className="ml-1 text-2xs px-1.5 py-0.5 bg-surface-800 text-surface-500 border border-surface-700 rounded-full">no metrics</span>
           )}
           </button>
         ))}
@@ -277,44 +275,44 @@ function AnalyticsInner() {
             {/* DORA KPI strip */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <KpiCard
-                label="Deploy Frequency"
-                value={`${dora.deployFrequency7d}/day`}
-                sub={`${dora.totalDeploys7d} deploys in 7d`}
-                badge={{ label: BAND_LABEL[dora.band] ?? dora.band, cls: BAND_CLR[dora.band] ?? BAND_CLR['low']! }}
-                trend={dora.deployFrequency7d >= 1 ? 'up' : 'neutral'}
+                label="ReplicaSet Revisions (7d)"
+                value={String(dora.totalDeploys7d)}
+                sub={`${dora.deployFrequency7d}/day · rollout-activity proxy`}
+                badge={{ label: 'ReplicaSet proxy', cls: 'bg-surface-800 text-surface-400 border-surface-700' }}
+                trend={dora.totalDeploys7d > 0 ? 'up' : 'neutral'}
                 color="text-white"
               />
               <KpiCard
-                label="Success Rate"
-                value={`${dora.successRate}%`}
-                sub={dora.failedDeploys > 0 ? `${dora.failedDeploys} deployments currently degraded` : 'All deployments healthy'}
-                color={dora.successRate >= 99 ? 'text-success' : 'text-warning'}
-                trend={dora.successRate >= 99 ? 'up' : 'down'}
+                label="Current Deployment Health"
+                value={dora.activeDeploys > 0 ? `${dora.successRate}%` : '—'}
+                sub={dora.activeDeploys > 0 ? `${dora.activeDeploys - dora.failedDeploys} of ${dora.activeDeploys} deployments currently healthy` : 'No deployments to assess'}
+                color={dora.activeDeploys === 0 ? 'text-surface-400' : dora.successRate >= 99 ? 'text-success' : 'text-warning'}
+                trend={dora.activeDeploys === 0 ? 'neutral' : dora.successRate >= 99 ? 'up' : 'down'}
               />
               <KpiCard
-                label="Change Failure Rate"
-                value={`${dora.changeFailureRate}%`}
-                sub="deployments with unavailable replicas"
-                color={dora.changeFailureRate === 0 ? 'text-success' : dora.changeFailureRate < 5 ? 'text-warning' : 'text-danger'}
-                trend={dora.changeFailureRate === 0 ? 'up' : 'down'}
+                label="Currently Degraded"
+                value={dora.activeDeploys > 0 ? `${dora.failedDeploys}/${dora.activeDeploys}` : '—'}
+                sub={dora.activeDeploys > 0 ? 'deployments with unavailable replicas' : 'No deployments to assess'}
+                color={dora.activeDeploys === 0 ? 'text-surface-400' : dora.failedDeploys === 0 ? 'text-success' : 'text-danger'}
+                trend={dora.activeDeploys === 0 ? 'neutral' : dora.failedDeploys === 0 ? 'up' : 'down'}
               />
               <KpiCard
                 label="SLA Compliance"
-                value={`${sla.length > 0 ? Math.round((sla.filter(s => s.slaStatus === 'healthy').length / sla.length) * 100) : 100}%`}
-                sub={`${slaBreached} breached · ${slaAtRisk} at-risk`}
-                color={slaBreached > 0 ? 'text-danger' : slaAtRisk > 0 ? 'text-warning' : 'text-success'}
-                trend={slaBreached > 0 ? 'down' : 'up'}
+                value={slaAssessed.length > 0 ? `${Math.round(slaHealthy / slaAssessed.length * 100)}%` : '—'}
+                sub={sla.length > 0 ? `${slaHealthy}/${slaAssessed.length} assessed · ${slaUnknown} unknown` : 'No deployments to assess'}
+                color={slaAssessed.length === 0 ? 'text-surface-400' : slaBreached > 0 ? 'text-danger' : slaAtRisk > 0 || slaUnknown > 0 ? 'text-warning' : 'text-success'}
+                trend={slaAssessed.length === 0 ? 'neutral' : slaBreached > 0 ? 'down' : 'up'}
               />
             </div>
 
             {/* Deploy frequency heatmap */}
             <div className="rounded-2xl bg-surface-900 border border-surface-800 p-4">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <Rocket className="w-4 h-4 text-brand-400" /> Deploy Frequency (Last 7 Days)
+                  <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                    <Rocket className="w-4 h-4 text-brand-400" /> ReplicaSet Revisions (Last 7 Days)
                 </h3>
-                <span className={cn('text-2xs px-2 py-0.5 rounded border font-medium', BAND_CLR[dora.band] ?? BAND_CLR['low']!)}>
-                  {BAND_LABEL[dora.band] ?? dora.band} · {dora.deployFrequency7d}/day
+                <span className="text-2xs px-2 py-0.5 rounded border font-medium bg-surface-800 text-surface-400 border-surface-700">
+                  rollout proxy · {dora.deployFrequency7d}/day
                 </span>
               </div>
               <ResponsiveContainer width="100%" height={130}>
@@ -322,8 +320,8 @@ function AnalyticsInner() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
                   <XAxis dataKey="date" tickFormatter={v => format(new Date(v), 'EEE d')} tick={{ fontSize: 10, fill: '#64748b' }} tickLine={false} axisLine={false} />
                   <YAxis tick={{ fontSize: 10, fill: '#64748b' }} tickLine={false} axisLine={false} allowDecimals={false} />
-                  <Tooltip content={<CustomTooltip unit=" deploys" />} />
-                  <Bar dataKey="count" name="Deploys" fill="#6366f1" radius={[3, 3, 0, 0]} />
+                  <Tooltip content={<CustomTooltip unit=" revisions" />} />
+                  <Bar dataKey="count" name="ReplicaSet revisions" fill="#6366f1" radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -409,25 +407,31 @@ function AnalyticsInner() {
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <KpiCard
                 label="Fleet Compliance"
-                value={sla.length > 0 ? `${((sla.filter(s => s.slaStatus === 'healthy').length / sla.length) * 100).toFixed(0)}%` : '—'}
-                sub={`${sla.filter(s => s.slaStatus === 'healthy').length} of ${sla.length} services healthy`}
-                color={sla.every(s => s.slaStatus === 'healthy') ? 'text-success' : slaBreached > 0 ? 'text-danger' : 'text-warning'}
-                badge={sla.length > 0 && sla.every(s => s.slaStatus === 'healthy') ? { label: 'All healthy', cls: 'bg-success/10 text-success border-success/20' } : undefined}
+                value={slaAssessed.length > 0 ? `${((slaHealthy / slaAssessed.length) * 100).toFixed(0)}%` : '—'}
+                sub={`${slaHealthy} of ${slaAssessed.length} assessed healthy · ${slaUnknown} unknown`}
+                color={slaAssessed.length === 0 ? 'text-surface-400' : slaBreached > 0 ? 'text-danger' : slaAtRisk > 0 || slaUnknown > 0 ? 'text-warning' : 'text-success'}
+                badge={sla.length > 0 && slaUnknown === 0 && slaHealthy === slaAssessed.length ? { label: 'All healthy', cls: 'bg-success/10 text-success border-success/20' } : undefined}
               />
-              <KpiCard label="SLA Breached" value={String(slaBreached)} sub={slaBreached > 0 ? 'Immediate action required' : 'No breaches'} color={slaBreached > 0 ? 'text-danger' : 'text-success'} />
-              <KpiCard label="At Risk" value={String(slaAtRisk)} sub={slaAtRisk > 0 ? 'Budget < 20% remaining' : 'No services at risk'} color={slaAtRisk > 0 ? 'text-warning' : 'text-success'} />
-              <KpiCard label="Fast Burns" value={String(sla.filter(s => s.fastBurn).length)} sub="Budget exhausts in <1h" color={sla.some(s => s.fastBurn) ? 'text-danger' : 'text-success'} badge={sla.some(s => s.fastBurn) ? { label: 'Action needed', cls: 'bg-danger/10 text-danger border-danger/20' } : undefined} />
+              <KpiCard label="SLA Breached" value={slaAssessed.length > 0 ? String(slaBreached) : '—'} sub={sla.length === 0 ? 'No deployments to assess' : slaAssessed.length === 0 ? `${slaUnknown} unknown · 30d history required` : slaBreached > 0 ? 'Immediate action required' : `${slaUnknown} unknown · ${slaBreached} breaches`} color={slaAssessed.length === 0 ? 'text-surface-400' : slaBreached > 0 ? 'text-danger' : slaUnknown > 0 ? 'text-warning' : 'text-success'} />
+              <KpiCard label="At Risk" value={slaAssessed.length > 0 ? String(slaAtRisk) : '—'} sub={sla.length === 0 ? 'No deployments to assess' : slaAssessed.length === 0 ? `${slaUnknown} unknown · 30d history required` : slaAtRisk > 0 ? 'Budget < 20% remaining' : `${slaUnknown} unknown · ${slaAtRisk} at-risk`} color={slaAssessed.length === 0 ? 'text-surface-400' : slaAtRisk > 0 ? 'text-warning' : slaUnknown > 0 ? 'text-warning' : 'text-success'} />
+              <KpiCard label="Fast Burns" value={burnAssessed.length > 0 ? String(fastBurnCount) : '—'} sub={burnAssessed.length === 0 ? 'No 1h/6h metrics to assess' : 'Above multi-window fast-burn threshold'} color={burnAssessed.length === 0 ? 'text-surface-400' : fastBurnCount > 0 ? 'text-danger' : 'text-success'} badge={fastBurnCount > 0 ? { label: 'Action needed', cls: 'bg-danger/10 text-danger border-danger/20' } : undefined} />
             </div>
+
+            {slaUnknown > 0 && (
+              <div role="status" className="rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-xs text-warning">
+                {slaUnknown} of {sla.length} services lack a complete 30-day history. Their 30d availability and error budgets are unknown; increase Prometheus retention and wait for a full window before assessing them.
+              </div>
+            )}
 
             {/* Fast burn alert banner */}
             {sla.some(s => s.fastBurn) && (
               <div className="rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 flex items-start gap-3">
                 <Flame className="w-4 h-4 text-danger flex-shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-sm font-semibold text-danger">Fast Burn Alert — Budget exhaustion imminent</p>
+                  <p className="text-sm font-semibold text-danger">Fast Burn Alert — Rapid error-budget consumption</p>
                   <p className="text-2xs text-surface-400 mt-0.5">
-                    Services burning &gt;14x normal:{' '}<span className="font-mono text-white">{sla.filter(s => s.fastBurn).map(s => s.name).join(', ')}</span>
-                    {' '}— 30-day error budget exhausts within the hour.
+                    Services above the multi-window threshold:{' '}<span className="font-mono text-white">{sla.filter(s => s.fastBurn).map(s => s.name).join(', ')}</span>
+                    {' '}Review their remaining budget and recent availability.
                   </p>
                 </div>
               </div>
@@ -437,9 +441,9 @@ function AnalyticsInner() {
             <div className="flex items-start gap-3 px-3 py-2.5 rounded-xl bg-surface-900/60 border border-surface-800/50">
               <Shield className="w-4 h-4 text-brand-400 flex-shrink-0 mt-0.5" />
               <p className="text-2xs text-surface-500 leading-relaxed">
-                <span className="text-surface-300 font-semibold">SLO:</span> 99.9% availability &middot;{' '}
-                <span className="text-surface-300 font-semibold">Error budget:</span> 43.2 min/month (30d rolling) &middot;{' '}
-                <span className="text-surface-300 font-semibold">Burn rate:</span> 1x = normal &middot; &gt;14.4x in 1h = fast burn &middot; &gt;6x in 6h = slow burn.
+                <span className="text-surface-300 font-semibold">Default SLO:</span> 99.9% availability (customizable per service) &middot;{' '}
+                <span className="text-surface-300 font-semibold">Default error budget:</span> 43.2 min per 30d at 99.9%; actual budget depends on service target &middot;{' '}
+                <span className="text-surface-300 font-semibold">Burn rate:</span> 1x = expected consumption &middot; &gt;14.4x in 1h or &gt;6x in 6h = fast burn &middot; &gt;3x in 1h or &gt;1.5x in 6h = slow burn.
                 {' '}SLI: replica availability via kube-state-metrics.
               </p>
             </div>
@@ -451,8 +455,8 @@ function AnalyticsInner() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {[...sla]
                   .sort((a, b) => {
-                    const rank = (s: SlaService) => s.fastBurn ? 0 : s.slaStatus === 'breached' ? 1 : s.slowBurn ? 2 : s.slaStatus === 'at-risk' ? 3 : 4
-                    return rank(a) - rank(b) || b.burnRate1h - a.burnRate1h
+                    const rank = (s: SlaService) => s.fastBurn ? 0 : s.slaStatus === 'breached' ? 1 : s.slowBurn ? 2 : s.slaStatus === 'at-risk' ? 3 : s.slaStatus === 'unknown' ? 5 : 4
+                    return rank(a) - rank(b) || (b.burnRate1h ?? 0) - (a.burnRate1h ?? 0)
                   })
                   .map((svc, idx) => <SloCard key={`${svc.namespace}/${svc.name}`} svc={svc} idx={idx} onRefresh={refresh} />)}
               </div>
@@ -463,7 +467,7 @@ function AnalyticsInner() {
               <div className="rounded-2xl bg-surface-900 border border-surface-800 p-4">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-white">Fleet Compliance Trend — 30d</h3>
-                  <span className="text-2xs text-surface-500">Fleet average &middot; SLO target 99.9%</span>
+                  <span className="text-2xs text-surface-500">Fleet average &middot; 99.9% reference line</span>
                 </div>
                 <ResponsiveContainer width="100%" height={120}>
                   <AreaChart data={fleetHistory} margin={{ top: 4, right: 8, bottom: 0, left: -10 }}>
@@ -545,9 +549,9 @@ function AnalyticsInner() {
             {!latData.hasData ? (
               <div className="rounded-2xl bg-surface-900 border border-surface-800 px-6 py-16 text-center space-y-3">
                 <Activity className="w-10 h-10 text-surface-700 mx-auto" />
-                <p className="text-sm font-semibold text-surface-400">No latency data yet</p>
+                <p className="text-sm font-semibold text-surface-400">No latency metrics available</p>
                 <p className="text-xs text-surface-600 max-w-sm mx-auto">
-                  nginx-ingress metrics are enabled and Prometheus is scraping. Latency histograms will appear automatically once HTTP traffic flows through an Ingress resource.
+                  Prometheus returned no ingress latency histogram data for this window. Verify the ingress controller exposes metrics and Prometheus scrapes them; requests must flow through an Ingress for latency samples to appear.
                 </p>
                 <button onClick={latRefresh} disabled={latLoading}
                   className="mx-auto flex items-center gap-2 px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-xl text-xs text-surface-300 transition-all">
@@ -696,35 +700,36 @@ function budgetMinsLabel(mins: number): string {
 }
 
 /** Format availability %: show '100' for perfect, otherwise up to 3 significant decimal places */
-const fmtAvail = (v: number, decimals = 3) => v >= 100 ? '100' : v.toFixed(decimals)
+const fmtAvail = (v: number | null, decimals = 3) => v === null ? '—' : v >= 100 ? '100' : v.toFixed(decimals)
 
-function BurnRateBar({ label, rate, threshold }: { label: string; rate: number; threshold: number }) {
-  const pct   = Math.min(100, (rate / (threshold * 2)) * 100)
-  const isFast = rate > threshold
-  const isElev = !isFast && rate > threshold / 3
-  const exhaustHours = rate > 0 ? parseFloat((24 / rate).toFixed(1)) : null
+function BurnRateBar({ label, rate, threshold, slowThreshold, budgetUsedPct }: { label: string; rate: number | null; threshold: number; slowThreshold: number; budgetUsedPct: number | null }) {
+  const pct   = rate === null ? 0 : Math.min(100, (rate / (threshold * 2)) * 100)
+  const isFast = rate !== null && rate > threshold
+  const isElev = rate !== null && !isFast && rate > slowThreshold
+  const remainingHours = estimateBudgetExhaustionHours(rate, budgetUsedPct)
+  const remainingLabel = remainingHours === null ? null : remainingHours <= 0 ? 'already exhausted' : remainingHours < 24 ? `${Math.max(1, Math.round(remainingHours * 60))}m` : `${(remainingHours / 24).toFixed(1)}d`
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
         <span className="text-2xs text-surface-500">{label}</span>
         <span className={cn('text-2xs font-mono font-bold',
-          isFast ? 'text-danger' : isElev ? 'text-warning' : 'text-success')}>
-          {rate > 0 ? `${rate.toFixed(1)}×` : '0×'}
+          rate === null ? 'text-surface-500' : isFast ? 'text-danger' : isElev ? 'text-warning' : 'text-success')}>
+          {rate === null ? '—' : rate > 0 ? `${rate.toFixed(1)}×` : '0×'}
         </span>
       </div>
       <div className="h-1.5 rounded-full bg-surface-800 overflow-hidden">
         <div
           className={cn('h-full rounded-full transition-all',
-            isFast ? 'bg-danger' : isElev ? 'bg-warning' : 'bg-success')}
+            rate === null ? 'bg-surface-600' : isFast ? 'bg-danger' : isElev ? 'bg-warning' : 'bg-success')}
           style={{ width: `${pct}%` }}
         />
       </div>
       <p className="text-2xs text-surface-600 mt-0.5 leading-tight">
         {isFast
-          ? `Exhausts budget in ~${Math.max(1, Math.round((exhaustHours ?? 1) * 60))}m`
+          ? remainingHours === null ? 'Fast burn; 30d budget runway unknown' : remainingHours === 0 ? 'Error budget already exhausted' : `At current rate, remaining budget lasts ~${remainingLabel}`
           : isElev
           ? 'Elevated — monitor closely'
-          : 'Normal'}
+          : rate === null ? 'No data for this window' : 'Normal'}
       </p>
     </div>
   )
@@ -757,7 +762,7 @@ function SloCard({ svc, idx, onRefresh }: { svc: SlaService; idx: number; onRefr
     onRefresh?.()
   }
   const budgetTotalMins = (1 - svc.slaTarget / 100) * 30 * 24 * 60
-  const sparkColor = svc.avail30d >= svc.slaTarget
+  const sparkColor = svc.avail30d === null ? '#64748b' : svc.avail30d >= svc.slaTarget
     ? '#22c55e'
     : svc.avail30d >= svc.slaTarget - 0.5 ? '#f59e0b' : '#ef4444'
   return (
@@ -789,6 +794,7 @@ function SloCard({ svc, idx, onRefresh }: { svc: SlaService; idx: number; onRefr
           <span className={cn('text-2xs px-1.5 py-0.5 rounded-full border font-medium capitalize',
             svc.slaStatus === 'healthy'  ? 'bg-success/10 text-success border-success/20' :
             svc.slaStatus === 'at-risk'  ? 'bg-warning/10 text-warning border-warning/20' :
+            svc.slaStatus === 'unknown'  ? 'bg-surface-800 text-surface-400 border-surface-700' :
             'bg-danger/10 text-danger border-danger/20')}>
             {svc.slaStatus}
           </span>
@@ -834,16 +840,16 @@ function SloCard({ svc, idx, onRefresh }: { svc: SlaService; idx: number; onRefr
         <div className="flex-shrink-0">
           <p className="text-2xs text-surface-500 mb-0.5">30d Availability</p>
           <p className={cn('text-2xl font-black tabular-nums leading-none',
-            svc.avail30d >= svc.slaTarget ? 'text-success' :
+            svc.avail30d === null ? 'text-surface-400' : svc.avail30d >= svc.slaTarget ? 'text-success' :
             svc.avail30d >= svc.slaTarget - 0.5 ? 'text-warning' : 'text-danger')}>
-            {fmtAvail(svc.avail30d)}%
+            {svc.avail30d === null ? '—' : `${fmtAvail(svc.avail30d)}%`}
           </p>
           <p className="text-2xs text-surface-600 mt-0.5">
             target <span className="text-surface-400">{svc.slaTarget}%</span>
           </p>
         </div>
         <div className="flex-1" style={{ height: 44 }}>
-          {(svc.historyPts ?? []).length > 2 ? (
+          {svc.historyComplete && (svc.historyPts ?? []).length > 2 ? (
             <ResponsiveContainer width="100%" height={44}>
               <LineChart data={svc.historyPts} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
                 <Line type="monotone" dataKey="value" stroke={sparkColor} strokeWidth={1.5} dot={false} isAnimationActive={false} />
@@ -851,7 +857,7 @@ function SloCard({ svc, idx, onRefresh }: { svc: SlaService; idx: number; onRefr
               </LineChart>
             </ResponsiveContainer>
           ) : (
-            <div className="h-full flex items-center justify-center text-2xs text-surface-700 italic">No history yet</div>
+            <div className="h-full flex items-center justify-center text-2xs text-surface-500 italic">{svc.historyDays > 0 ? `Insufficient 30d history (${svc.historyDays} days available)` : 'No history available'}</div>
           )}
         </div>
       </div>
@@ -861,9 +867,9 @@ function SloCard({ svc, idx, onRefresh }: { svc: SlaService; idx: number; onRefr
         <div className="flex items-center justify-between mb-1">
           <span className="text-2xs text-surface-500">Error Budget (30d rolling)</span>
           <span className={cn('text-2xs font-semibold',
-            svc.budgetRemainingMins <= 0  ? 'text-danger' :
+            svc.budgetRemainingMins === null ? 'text-surface-400' : svc.budgetRemainingMins <= 0  ? 'text-danger' :
             svc.budgetRemainingMins < budgetTotalMins * 0.2 ? 'text-warning' : 'text-success')}>
-            {svc.budgetRemainingMins > 0
+            {svc.budgetRemainingMins === null ? 'Unknown · full 30d history required' : svc.budgetRemainingMins > 0
               ? `${budgetMinsLabel(svc.budgetRemainingMins)} remaining`
               : `Exhausted ${budgetMinsLabel(Math.abs(svc.budgetRemainingMins))} ago`}
           </span>
@@ -871,14 +877,14 @@ function SloCard({ svc, idx, onRefresh }: { svc: SlaService; idx: number; onRefr
         <div className="h-2 rounded-full bg-surface-800 overflow-hidden">
           <div
             className={cn('h-full rounded-full transition-all',
-              svc.budgetUsedPct >= 100 ? 'bg-danger' :
+              svc.budgetUsedPct === null ? 'bg-surface-600' : svc.budgetUsedPct >= 100 ? 'bg-danger' :
               svc.budgetUsedPct >= 80  ? 'bg-warning' : 'bg-success')}
-            style={{ width: `${Math.min(100, Math.max(0, svc.budgetUsedPct))}%` }}
+            style={{ width: `${Math.min(100, Math.max(0, svc.budgetUsedPct ?? 0))}%` }}
           />
         </div>
         <div className="flex justify-between mt-0.5">
-          <span className={cn('text-2xs', svc.budgetUsedPct >= 100 ? 'text-danger font-semibold' : 'text-surface-600')}>
-            {svc.budgetUsedPct}% used{svc.budgetUsedPct > 100 ? ` (+${svc.budgetUsedPct - 100}% over)` : ''}
+          <span className={cn('text-2xs', svc.budgetUsedPct !== null && svc.budgetUsedPct >= 100 ? 'text-danger font-semibold' : 'text-surface-600')}>
+            {svc.budgetUsedPct === null ? '—' : `${svc.budgetUsedPct}% used${svc.budgetUsedPct > 100 ? ` (+${svc.budgetUsedPct - 100}% over)` : ''}`}
           </span>
           <span className="text-2xs text-surface-600">{budgetTotalMins.toFixed(0)}m total</span>
         </div>
@@ -886,8 +892,8 @@ function SloCard({ svc, idx, onRefresh }: { svc: SlaService; idx: number; onRefr
 
       {/* Burn rates */}
       <div className="grid grid-cols-2 gap-3 pt-2 border-t border-surface-800/50">
-        <BurnRateBar label="1h burn rate" rate={svc.burnRate1h} threshold={14.4} />
-        <BurnRateBar label="6h burn rate" rate={svc.burnRate6h} threshold={6} />
+        <BurnRateBar label="1h burn rate" rate={svc.burnRate1h} threshold={14.4} slowThreshold={3} budgetUsedPct={svc.budgetUsedPct} />
+        <BurnRateBar label="6h burn rate" rate={svc.burnRate6h} threshold={6} slowThreshold={1.5} budgetUsedPct={svc.budgetUsedPct} />
       </div>
 
       {/* Multi-window availability + replicas footer */}

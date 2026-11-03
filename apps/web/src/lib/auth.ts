@@ -2,6 +2,7 @@ import NextAuth from 'next-auth'
 import Credentials from 'next-auth/providers/credentials'
 import bcrypt from 'bcryptjs'
 import { z } from 'zod'
+import { logFailedSignIn, logSignOut, logSuccessfulSignIn } from '@/lib/auth-audit'
 
 // -- Development-only fallback users (never used in production) -----------
 const DEMO_USERS = [
@@ -74,15 +75,24 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       },
       authorize: async (credentials) => {
         const parsed = credentialsSchema.safeParse(credentials)
-        if (!parsed.success) return null
+        if (!parsed.success) {
+          logFailedSignIn()
+          return null
+        }
 
         const { email, password } = parsed.data
         const user = readUsers().find((u) => u.email.toLowerCase() === email.toLowerCase())
-        if (!user) return null
+        if (!user) {
+          logFailedSignIn()
+          return null
+        }
 
         const hash = getPasswordHash(user.id)
         const valid = hash ? await bcrypt.compare(password, hash) : false
-        if (!valid) return null
+        if (!valid) {
+          logFailedSignIn({ id: user.id, email: user.email })
+          return null
+        }
 
         return { id: user.id, name: user.name, email: user.email, role: user.role, team: user.team, avatar: user.avatar }
       },
@@ -112,6 +122,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         u.id = token.sub
       }
       return session
+    },
+  },
+  events: {
+    signIn({ user }) {
+      logSuccessfulSignIn({ id: user.id, email: user.email })
+    },
+    signOut(message) {
+      const token = 'token' in message ? message.token : null
+      const session = 'session' in message ? message.session : null
+      const identity = token
+        ? { id: token.sub, email: token.email }
+        : { id: session?.userId }
+      logSignOut(identity)
     },
   },
 })

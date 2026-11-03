@@ -21,6 +21,7 @@ interface FixRequest {
   namespace:      string
   podName?:       string
   containerName?: string
+  containerType?: 'containers' | 'initContainers'
 }
 
 async function k8sGet(path: string) {
@@ -65,41 +66,52 @@ async function k8sStrategicPatch(path: string, body: unknown) {
   return r.json()
 }
 
-// Walk pod → ReplicaSet → Deployment
-async function resolveDeployment(podName: string, namespace: string): Promise<string | null> {
-  try {
-    const pod = await k8sGet(`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}`)
-    if (pod) {
-      const rs = (pod.metadata?.ownerReferences ?? []).find((o: any) => o.kind === 'ReplicaSet')
-      if (rs) {
-        const rsData = await k8sGet(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/replicasets/${encodeURIComponent(rs.name)}`)
-        const dep = (rsData?.metadata?.ownerReferences ?? []).find((o: any) => o.kind === 'Deployment')
-        if (dep?.name) return dep.name
-      }
-      // Direct deployment pod (unusual but possible)
-      const direct = (pod.metadata?.ownerReferences ?? []).find((o: any) => o.kind === 'Deployment')
-      if (direct?.name) return direct.name
-    }
-  } catch { /* fall through */ }
-  // podName might already be a deployment name — check
-  const dep = await k8sGet(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(podName)}`)
-  return dep ? podName : null
+type WorkloadTarget = { resource: 'deployments' | 'statefulsets' | 'daemonsets'; name: string }
+
+const WORKLOAD_RESOURCE: Record<string, WorkloadTarget['resource']> = {
+  Deployment: 'deployments',
+  StatefulSet: 'statefulsets',
+  DaemonSet: 'daemonsets',
+}
+
+function workloadPath(namespace: string, target: WorkloadTarget): string {
+  return `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/${target.resource}/${encodeURIComponent(target.name)}`
+}
+
+async function resolveWorkload(podName: string, namespace: string): Promise<WorkloadTarget | null> {
+  const pod = await k8sGet(`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}`)
+  const owners = pod?.metadata?.ownerReferences ?? []
+  const owner = owners.find((item: any) => item.controller !== false && (WORKLOAD_RESOURCE[item.kind] || item.kind === 'ReplicaSet')) ?? owners[0]
+
+  if (owner?.kind === 'ReplicaSet') {
+    const replicaSet = await k8sGet(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/replicasets/${encodeURIComponent(owner.name)}`)
+    const deployment = (replicaSet?.metadata?.ownerReferences ?? []).find((item: any) => item.kind === 'Deployment')
+    if (deployment?.name) return { resource: 'deployments', name: deployment.name }
+  } else if (owner?.name && WORKLOAD_RESOURCE[owner.kind]) {
+    return { resource: WORKLOAD_RESOURCE[owner.kind], name: owner.name }
+  }
+
+  for (const resource of ['deployments', 'statefulsets', 'daemonsets'] as const) {
+    const workload = await k8sGet(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/${resource}/${encodeURIComponent(podName)}`)
+    if (workload) return { resource, name: podName }
+  }
+  return null
 }
 
 // ── Fix handlers ──────────────────────────────────────────────────────────────
 
-async function fixNoPrivEsc(namespace: string, podName: string, containerName: string) {
-  const depName = await resolveDeployment(podName, namespace)
-  if (!depName) throw new Error(`Could not resolve deployment from pod ${podName}`)
+async function fixNoPrivEsc(namespace: string, podName: string, containerName: string, containerType: 'containers' | 'initContainers') {
+  const workload = await resolveWorkload(podName, namespace)
+  if (!workload) throw new Error(`Could not resolve a supported workload from pod ${podName}`)
 
   // Strategic merge patch — uses container.name as merge key
   await k8sStrategicPatch(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(depName)}`,
+    workloadPath(namespace, workload),
     {
       spec: {
         template: {
           spec: {
-            containers: [{
+            [containerType]: [{
               name: containerName,
               securityContext: { allowPrivilegeEscalation: false },
             }],
@@ -108,18 +120,18 @@ async function fixNoPrivEsc(namespace: string, podName: string, containerName: s
       },
     },
   )
-  return { deployment: depName, applied: `securityContext.allowPrivilegeEscalation: false on container ${containerName}` }
+  return { workload: workload.name, applied: `securityContext.allowPrivilegeEscalation: false on container ${containerName}` }
 }
 
 async function fixHostNetwork(namespace: string, podName: string) {
-  const depName = await resolveDeployment(podName, namespace)
-  if (!depName) throw new Error(`Could not resolve deployment from pod ${podName}`)
+  const workload = await resolveWorkload(podName, namespace)
+  if (!workload) throw new Error(`Could not resolve a supported workload from pod ${podName}`)
 
   await k8sMergePatch(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(depName)}`,
+    workloadPath(namespace, workload),
     { spec: { template: { spec: { hostNetwork: false } } } },
   )
-  return { deployment: depName, applied: 'spec.template.spec.hostNetwork: false' }
+  return { workload: workload.name, applied: 'spec.template.spec.hostNetwork: false' }
 }
 
 async function fixPsaLabel(namespace: string) {
@@ -134,14 +146,15 @@ async function fixPsaLabel(namespace: string) {
   return { namespace, applied: 'pod-security.kubernetes.io/enforce: baseline' }
 }
 
-async function fixResourceLimits(namespace: string, podName: string, containerName: string) {
-  const depName = await resolveDeployment(podName, namespace)
-  if (!depName) throw new Error(`Could not resolve deployment from pod ${podName}`)
+async function fixResourceLimits(namespace: string, podName: string, containerName: string, containerType: 'containers' | 'initContainers') {
+  const workload = await resolveWorkload(podName, namespace)
+  if (!workload) throw new Error(`Could not resolve a supported workload from pod ${podName}`)
 
   // Read current spec to check what limits (if any) exist
-  const dep = await k8sGet(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(depName)}`)
-  const containers: any[] = dep?.spec?.template?.spec?.containers ?? []
-  const container = containers.find((c: any) => c.name === containerName) ?? containers[0]
+  const dep = await k8sGet(workloadPath(namespace, workload))
+  const containers: any[] = dep?.spec?.template?.spec?.[containerType] ?? []
+  const container = containers.find((c: any) => c.name === containerName)
+  if (!container) throw new Error(`Container ${containerName} not found in ${workload.name}`)
   const existing  = container?.resources?.limits ?? {}
 
   const newLimits = {
@@ -150,12 +163,12 @@ async function fixResourceLimits(namespace: string, podName: string, containerNa
   }
 
   await k8sStrategicPatch(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(depName)}`,
+    workloadPath(namespace, workload),
     {
       spec: {
         template: {
           spec: {
-            containers: [{
+            [containerType]: [{
               name: container?.name ?? containerName,
               resources: { limits: newLimits },
             }],
@@ -164,7 +177,21 @@ async function fixResourceLimits(namespace: string, podName: string, containerNa
       },
     },
   )
-  return { deployment: depName, applied: `resources.limits: {cpu: ${newLimits.cpu}, memory: ${newLimits.memory}} on container ${container?.name ?? containerName}` }
+  return { workload: workload.name, applied: `resources.limits: {cpu: ${newLimits.cpu}, memory: ${newLimits.memory}} on container ${container.name}` }
+}
+
+async function fixReadOnlyRootFs(namespace: string, podName: string, containerName: string, containerType: 'containers' | 'initContainers') {
+  const workload = await resolveWorkload(podName, namespace)
+  if (!workload) throw new Error(`Could not resolve a supported workload from pod ${podName}`)
+  const current = await k8sGet(workloadPath(namespace, workload))
+  const containers: any[] = current?.spec?.template?.spec?.[containerType] ?? []
+  if (!containers.some((container: any) => container.name === containerName)) {
+    throw new Error(`Container ${containerName} not found in ${workload.name}`)
+  }
+  await k8sStrategicPatch(workloadPath(namespace, workload), {
+    spec: { template: { spec: { [containerType]: [{ name: containerName, securityContext: { readOnlyRootFilesystem: true } }] } } },
+  })
+  return { workload: workload.name, applied: `securityContext.readOnlyRootFilesystem: true on container ${containerName}` }
 }
 
 // ── POST ──────────────────────────────────────────────────────────────────────
@@ -184,10 +211,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
   }
 
-  const { type, namespace, podName = '', containerName = '' } = body
+  const { type, namespace, podName = '', containerName = '', containerType = 'containers' } = body
 
   if (!type || !namespace) {
     return NextResponse.json({ error: 'type and namespace are required' }, { status: 400 })
+  }
+  if (containerType !== 'containers' && containerType !== 'initContainers') {
+    return NextResponse.json({ error: 'containerType must be containers or initContainers' }, { status: 400 })
   }
 
   const K8S = await resolveK8sUrl()
@@ -199,7 +229,7 @@ export async function POST(req: NextRequest) {
     switch (type) {
       case 'set_no_priv_esc':
         if (!podName || !containerName) return NextResponse.json({ error: 'podName and containerName required' }, { status: 400 })
-        result = await fixNoPrivEsc(namespace, podName, containerName)
+        result = await fixNoPrivEsc(namespace, podName, containerName, containerType)
         break
       case 'remove_host_network':
         if (!podName) return NextResponse.json({ error: 'podName required' }, { status: 400 })
@@ -210,7 +240,11 @@ export async function POST(req: NextRequest) {
         break
       case 'add_resource_limits':
         if (!podName || !containerName) return NextResponse.json({ error: 'podName and containerName required' }, { status: 400 })
-        result = await fixResourceLimits(namespace, podName, containerName)
+        result = await fixResourceLimits(namespace, podName, containerName, containerType)
+        break
+      case 'set_read_only_root_fs':
+        if (!podName || !containerName) return NextResponse.json({ error: 'podName and containerName required' }, { status: 400 })
+        result = await fixReadOnlyRootFs(namespace, podName, containerName, containerType)
         break
       default:
         return NextResponse.json({ error: `Unknown fix type: ${type}` }, { status: 400 })

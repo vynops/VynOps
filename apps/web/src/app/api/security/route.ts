@@ -1,27 +1,31 @@
 ﻿import { NextResponse } from 'next/server'
 import { resolveK8sUrl , K8S_TIMEOUT_MS } from '@/lib/cluster'
+import {
+  classifyWarningPriority,
+  countUniqueWorkloadFindings,
+  enforcesNonRoot,
+  getFalcoPodKeys,
+  getFalcoStatus,
+  getNamespaceNetworkPolicyCoverage,
+  getResourceLimitGaps,
+  scoreSecurityControls,
+  type SecurityControl,
+} from './scan'
 
 const SKIP_NS = new Set(['kube-system', 'kube-public', 'kube-node-lease'])
 
 async function k8sGet(path: string) {
   const K8S = await resolveK8sUrl()
-  if (!K8S) return { items: [] }
-  try {
-    const r = await fetch(`${K8S}${path}`, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(K8S_TIMEOUT_MS),
-      next: { revalidate: 0 },
-    } as RequestInit)
-    return r.ok ? r.json() : { items: [] }
-  } catch { return { items: [] } }
-}
-
-function reasonSeverity(reason: string): 'critical' | 'high' | 'medium' {
-  const critical = ['OOMKilling', 'Evicted', 'BackOff', 'Failed', 'CrashLoopBackOff']
-  const high = ['FailedMount', 'Unhealthy', 'NodeNotReady', 'ImagePullBackOff', 'NetworkNotReady']
-  if (critical.some(r => reason.toLowerCase().includes(r.toLowerCase()))) return 'critical'
-  if (high.some(r => reason.toLowerCase().includes(r.toLowerCase()))) return 'high'
-  return 'medium'
+  if (!K8S) throw new Error('Kubernetes API URL is unavailable for the selected cluster')
+  const r = await fetch(`${K8S}${path}`, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(K8S_TIMEOUT_MS),
+    next: { revalidate: 0 },
+  } as RequestInit)
+  if (!r.ok) throw new Error(`${path} returned HTTP ${r.status}`)
+  const data = await r.json()
+  if (!Array.isArray(data?.items)) throw new Error(`${path} returned an invalid list response`)
+  return data
 }
 
 export async function GET() {
@@ -30,48 +34,57 @@ export async function GET() {
 
   try {
     const [
-      podsData, nsData, netpolData,
+      podsData, nsData, netpolData, daemonSetsData,
       crbsData, crsData, eventsData,
     ] = await Promise.all([
       k8sGet('/api/v1/pods'),
       k8sGet('/api/v1/namespaces'),
       k8sGet('/apis/networking.k8s.io/v1/networkpolicies'),
+      k8sGet('/apis/apps/v1/daemonsets'),
       k8sGet('/apis/rbac.authorization.k8s.io/v1/clusterrolebindings'),
       k8sGet('/apis/rbac.authorization.k8s.io/v1/clusterroles'),
       k8sGet('/api/v1/events?fieldSelector=type%3DWarning&limit=200'),
     ])
 
+    const falcoStatus = getFalcoStatus(daemonSetsData.items)
+    const falcoPodKeys = getFalcoPodKeys(daemonSetsData.items, podsData.items)
+    const falcoRunning = falcoStatus.running
+    const falcoPods = falcoStatus.readyPods
+
     // ── Workload security analysis ──────────────────────────────────────────
     const privilegedPods: { pod: string; ns: string; container: string; image: string }[] = []
     const latestTagContainers: { pod: string; ns: string; container: string; image: string }[] = []
-    const noLimitsContainers:  { pod: string; ns: string; container: string; image: string }[] = []
-    const noReadOnlyFsContainers: { pod: string; ns: string; container: string }[] = []
-    const allowPrivEscContainers: { pod: string; ns: string; container: string }[] = []
+    const noLimitsContainers:  { pod: string; ns: string; container: string; containerType: 'containers' | 'initContainers'; image: string; missingCpuLimit: boolean; missingMemoryLimit: boolean; fixable: boolean }[] = []
+    const noCpuLimitContainers: { pod: string; ns: string; container: string }[] = []
+    const noMemoryLimitContainers: { pod: string; ns: string; container: string }[] = []
+    const noReadOnlyFsContainers: { pod: string; ns: string; container: string; containerType: 'containers' | 'initContainers'; fixable: boolean }[] = []
+    const allowPrivEscContainers: { pod: string; ns: string; container: string; containerType: 'containers' | 'initContainers'; fixable: boolean }[] = []
     const noRunAsNonRootContainers: { pod: string; ns: string; container: string }[] = []
     const noSeccompContainers: { pod: string; ns: string; container: string }[] = []
     const secretEnvContainers: { pod: string; ns: string; container: string }[] = []
-    const hostNetworkPods: { pod: string; ns: string }[] = []
+    const hostNetworkPods: { pod: string; ns: string; fixable: boolean }[] = []
     const hostPathPods:    { pod: string; ns: string }[] = []
-
-    let falcoRunning = false
-    let falcoPods = 0
 
     for (const pod of (podsData.items ?? [])) {
       const ns   = pod.metadata.namespace as string
       const name = pod.metadata.name as string
       const spec = pod.spec ?? {}
       const podSecCtx = spec.securityContext ?? {}
-
-      // Detect Falco (privileged runtime security - expected, noted separately)
-      if (ns === 'falco') { falcoRunning = true; falcoPods++ }
+      const fixable = (pod.metadata?.ownerReferences ?? []).some((owner: any) =>
+        owner.controller !== false && ['ReplicaSet', 'Deployment', 'StatefulSet', 'DaemonSet'].includes(owner.kind)
+      )
 
       if (SKIP_NS.has(ns)) continue
 
       const hasHostPath = (spec.volumes ?? []).some((v: any) => !!v.hostPath)
-      if (spec.hostNetwork) hostNetworkPods.push({ pod: name, ns })
+      if (spec.hostNetwork) hostNetworkPods.push({ pod: name, ns, fixable })
       if (hasHostPath) hostPathPods.push({ pod: name, ns })
 
-      for (const c of [...(spec.containers ?? []), ...(spec.initContainers ?? [])]) {
+      for (const [containerType, containerList] of [
+        ['containers', spec.containers ?? []],
+        ['initContainers', spec.initContainers ?? []],
+      ] as const) {
+        for (const c of containerList) {
         const sc  = c.securityContext ?? {}
         const img = (c.image as string) ?? ''
         const isLatest = img.endsWith(':latest') || img.includes(':latest@sha')
@@ -80,14 +93,12 @@ export async function GET() {
           privilegedPods.push({ pod: name, ns, container: c.name, image: img })
 
         if (sc.allowPrivilegeEscalation !== false)
-          allowPrivEscContainers.push({ pod: name, ns, container: c.name })
+          allowPrivEscContainers.push({ pod: name, ns, container: c.name, containerType, fixable })
 
         if (!sc.readOnlyRootFilesystem)
-          noReadOnlyFsContainers.push({ pod: name, ns, container: c.name })
+          noReadOnlyFsContainers.push({ pod: name, ns, container: c.name, containerType, fixable })
 
-        // runAsNonRoot: must be true at container level OR pod level
-        const effectiveRunAsNonRoot = sc.runAsNonRoot ?? podSecCtx.runAsNonRoot
-        if (!effectiveRunAsNonRoot && sc.runAsUser !== 0)
+        if (!enforcesNonRoot(sc, podSecCtx))
           noRunAsNonRootContainers.push({ pod: name, ns, container: c.name })
 
         // seccomp: must be set at container or pod level
@@ -101,18 +112,19 @@ export async function GET() {
         if (hasSecretEnv)
           secretEnvContainers.push({ pod: name, ns, container: c.name })
 
-        if (!c.resources?.limits)
-          noLimitsContainers.push({ pod: name, ns, container: c.name, image: img })
+        const limitGaps = getResourceLimitGaps(c)
+        if (limitGaps.cpu) noCpuLimitContainers.push({ pod: name, ns, container: c.name })
+        if (limitGaps.memory) noMemoryLimitContainers.push({ pod: name, ns, container: c.name })
+        if (limitGaps.cpu || limitGaps.memory)
+          noLimitsContainers.push({ pod: name, ns, container: c.name, containerType, image: img, missingCpuLimit: limitGaps.cpu, missingMemoryLimit: limitGaps.memory, fixable })
 
         if (isLatest)
           latestTagContainers.push({ pod: name, ns, container: c.name, image: img })
+        }
       }
     }
 
     // ── Namespace analysis ─────────────────────────────────────────────────
-    const nsWithNetpol = new Set(
-      (netpolData.items ?? []).map((np: any) => np.metadata.namespace as string)
-    )
     const userNamespaces = (nsData.items ?? [])
       .map((n: any) => n.metadata.name as string)
       .filter((n: string) => !SKIP_NS.has(n))
@@ -120,13 +132,9 @@ export async function GET() {
     const nsAnalysis = userNamespaces.map((nsName: string) => {
       const nsObj = (nsData.items ?? []).find((n: any) => n.metadata.name === nsName)
       const psaLevel = (nsObj?.metadata?.labels?.['pod-security.kubernetes.io/enforce'] as string | undefined) ?? null
-      const hasNetpol = nsWithNetpol.has(nsName)
-      const workloadRisks = (
-        privilegedPods.filter(p => p.ns === nsName).length +
-        latestTagContainers.filter(p => p.ns === nsName).length +
-        noLimitsContainers.filter(p => p.ns === nsName).length
-      )
-      return { name: nsName, hasNetpol, psaLevel, workloadRisks }
+      const netpolCoverage = getNamespaceNetworkPolicyCoverage(nsName, netpolData.items)
+      const workloadRisks = countUniqueWorkloadFindings(nsName, privilegedPods, latestTagContainers, noLimitsContainers)
+      return { name: nsName, ...netpolCoverage, psaLevel, workloadRisks }
     })
 
     // ── RBAC analysis ──────────────────────────────────────────────────────
@@ -166,7 +174,7 @@ export async function GET() {
     const clusterAdminBindings = nonSysCRBs.filter(rb => rb.isClusterAdmin)
 
     // ── Threats (K8s Warning events) ───────────────────────────────────────
-    const threats = (eventsData.items ?? [])
+    const warningEvents = (eventsData.items ?? [])
       .filter((e: any) => e.type === 'Warning')
       .map((e: any) => ({
         id:       e.metadata.uid as string,
@@ -177,54 +185,52 @@ export async function GET() {
         objName:  (e.involvedObject?.name as string) ?? '',
         count:    (e.count as number) ?? 1,
         lastTime: (e.lastTimestamp ?? e.eventTime) as string,
-        severity: reasonSeverity(e.reason ?? ''),
+        priority: classifyWarningPriority(e.reason ?? ''),
       }))
 
     // ── CIS Kubernetes Benchmark v1.8 checks ──────────────────────────────
     const totalUserNS    = userNamespaces.length
-    const nsWithoutNetpol = userNamespaces.filter((n: string) => !nsWithNetpol.has(n)).length
+    const nsWithoutNetpol = nsAnalysis.filter(ns => !ns.hasPolicy).length
     const nsWithoutPsa    = userNamespaces.filter((n: string) => {
       const nsObj = (nsData.items ?? []).find((x: any) => x.metadata.name === n)
       return !nsObj?.metadata?.labels?.['pod-security.kubernetes.io/enforce']
     }).length
 
     // Non-Falco privileged is the real concern (Falco runs privileged by design)
-    const nonFalcoPrivileged = privilegedPods.filter(p => p.ns !== 'falco').length
+    const nonFalcoPrivileged = privilegedPods.filter(p => !falcoPodKeys.has(`${p.ns}/${p.pod}`)).length
 
     // Group allowPrivEsc by unique pods only
     const uniqueAllowPrivEscPods = new Set(
       allowPrivEscContainers.map(c => `${c.ns}/${c.pod}`)
     ).size
 
-    interface CisCheck {
-      id: string; category: string; name: string
-      pass: boolean; severity: 'critical' | 'high' | 'medium' | 'low'
-      detail: string; count: number
-    }
-
-    const cisChecks: CisCheck[] = [
+    const controls: SecurityControl[] = [
       {
-        id: '5.3.1', category: 'Network Policies',
-        name: 'Namespaces have network policies',
-        pass: nsWithoutNetpol === 0,
-        severity: 'critical',
-        detail: nsWithoutNetpol === 0
-          ? 'All user namespaces have network isolation policies'
-          : `${nsWithoutNetpol}/${totalUserNS} user namespaces lack network policies — lateral movement risk`,
+        id: 'SEC-01', category: 'Network Policies',
+        name: 'User namespaces have a NetworkPolicy',
+        pass: totalUserNS === 0 ? null : nsWithoutNetpol === 0,
+        severity: 'medium',
+        detail: totalUserNS === 0
+          ? 'Not assessed: no user namespaces were returned by the API'
+          : nsWithoutNetpol === 0
+          ? 'A NetworkPolicy exists in each user namespace. Presence alone does not establish traffic isolation.'
+          : `${nsWithoutNetpol}/${totalUserNS} user namespaces have no NetworkPolicy`,
         count: nsWithoutNetpol,
       },
       {
-        id: '5.7.1', category: 'Pod Security Admission',
+        id: 'SEC-02', category: 'Pod Security Admission',
         name: 'Namespaces enforce pod security standards',
-        pass: nsWithoutPsa === 0,
+        pass: totalUserNS === 0 ? null : nsWithoutPsa === 0,
         severity: 'critical',
-        detail: nsWithoutPsa === 0
+        detail: totalUserNS === 0
+          ? 'Not assessed: no user namespaces were returned by the API'
+          : nsWithoutPsa === 0
           ? 'All namespaces enforce pod security admission (PSA)'
           : `${nsWithoutPsa}/${totalUserNS} namespaces missing pod-security.kubernetes.io/enforce label`,
         count: nsWithoutPsa,
       },
       {
-        id: '5.1.1', category: 'RBAC',
+        id: 'SEC-03', category: 'RBAC',
         name: 'ClusterRoles do not use wildcard permissions',
         pass: wildcardRoles.length === 0,
         severity: 'high',
@@ -234,7 +240,7 @@ export async function GET() {
         count: wildcardRoles.length,
       },
       {
-        id: '5.2.3', category: 'Pod Security',
+        id: 'SEC-04', category: 'Pod Security',
         name: 'Privilege escalation blocked in containers',
         pass: allowPrivEscContainers.length === 0,
         severity: 'high',
@@ -244,7 +250,7 @@ export async function GET() {
         count: allowPrivEscContainers.length,
       },
       {
-        id: '5.2.7', category: 'Pod Security',
+        id: 'SEC-05', category: 'Pod Security',
         name: 'Host path volumes restricted',
         pass: hostPathPods.length === 0,
         severity: 'high',
@@ -254,7 +260,7 @@ export async function GET() {
         count: hostPathPods.length,
       },
       {
-        id: '5.2.1', category: 'Pod Security',
+        id: 'SEC-06', category: 'Pod Security',
         name: 'Non-privileged containers only',
         pass: nonFalcoPrivileged === 0,
         severity: 'medium',
@@ -264,7 +270,7 @@ export async function GET() {
         count: nonFalcoPrivileged,
       },
       {
-        id: '5.2.6', category: 'Pod Security',
+        id: 'SEC-07', category: 'Pod Security',
         name: 'Host network namespace not shared',
         pass: hostNetworkPods.length === 0,
         severity: 'medium',
@@ -274,7 +280,7 @@ export async function GET() {
         count: hostNetworkPods.length,
       },
       {
-        id: '5.2.8', category: 'Image Security',
+        id: 'SEC-08', category: 'Image Security',
         name: 'No :latest / mutable image tags',
         pass: latestTagContainers.length === 0,
         severity: 'medium',
@@ -284,27 +290,27 @@ export async function GET() {
         count: latestTagContainers.length,
       },
       {
-        id: '5.4.2', category: 'Resource Management',
-        name: 'Resource limits set on all containers',
-        pass: noLimitsContainers.length === 0,
+        id: 'SEC-09', category: 'Resource Management',
+        name: 'CPU and memory limits set on all containers',
+        pass: noCpuLimitContainers.length === 0 && noMemoryLimitContainers.length === 0,
         severity: 'medium',
-        detail: noLimitsContainers.length === 0
+        detail: noCpuLimitContainers.length === 0 && noMemoryLimitContainers.length === 0
           ? 'All containers have CPU and memory limits set'
-          : `${noLimitsContainers.length} containers have no resource limits — DoS risk, noisy-neighbour potential`,
+          : `${noCpuLimitContainers.length} containers lack CPU limits; ${noMemoryLimitContainers.length} lack memory limits`,
         count: noLimitsContainers.length,
       },
       {
-        id: '5.2.4', category: 'Pod Security',
-        name: 'Containers run as non-root user',
+        id: 'SEC-10', category: 'Pod Security',
+        name: 'Non-root identity is configured',
         pass: noRunAsNonRootContainers.length === 0,
         severity: 'high',
         detail: noRunAsNonRootContainers.length === 0
-          ? 'All containers enforce runAsNonRoot: true'
-          : `${noRunAsNonRootContainers.length} containers do not enforce runAsNonRoot — risk of root breakout if container is compromised`,
+          ? 'All containers set runAsNonRoot: true or a non-root runAsUser'
+          : `${noRunAsNonRootContainers.length} containers do not configure a non-root identity; this does not prove they run as root`,
         count: noRunAsNonRootContainers.length,
       },
       {
-        id: '5.2.10', category: 'Pod Security',
+        id: 'SEC-11', category: 'Pod Security',
         name: 'Seccomp profile set on containers',
         pass: noSeccompContainers.length === 0,
         severity: 'medium',
@@ -314,8 +320,8 @@ export async function GET() {
         count: noSeccompContainers.length,
       },
       {
-        id: '5.4.1', category: 'Secrets Management',
-        name: 'Secrets not exposed as plain env vars',
+        id: 'SEC-12', category: 'Secrets Management',
+        name: 'Containers avoid Secret-backed environment variables',
         pass: secretEnvContainers.length === 0,
         severity: 'low',
         detail: secretEnvContainers.length === 0
@@ -324,51 +330,43 @@ export async function GET() {
         count: secretEnvContainers.length,
       },
       {
-        id: '5.1.6', category: 'RBAC',
-        name: 'Default service accounts inactive',
-        pass: true,
+        id: 'SEC-13', category: 'RBAC',
+        name: 'Default service account token automounting',
+        pass: null,
         severity: 'low',
-        detail: 'Service account token automounting audit requires API server audit logs — check automountServiceAccountToken: false on default SAs manually',
+        detail: 'Not assessed. Review automountServiceAccountToken on workloads and service accounts; API audit logs are not available to this scan.',
         count: 0,
       },
     ]
 
-    // ── Score ──────────────────────────────────────────────────────────────
-    const SEV_WEIGHT = { critical: 20, high: 15, medium: 10, low: 5 }
-    const totalWeight = cisChecks.reduce(
-      (s, c) => s + (SEV_WEIGHT[c.severity] ?? 5), 0
-    )
-    const passWeight = cisChecks
-      .filter(c => c.pass)
-      .reduce((s, c) => s + (SEV_WEIGHT[c.severity] ?? 5), 0)
-    const score = Math.round((passWeight / totalWeight) * 100)
-    const grade =
-      score >= 90 ? 'A' :
-      score >= 75 ? 'B' :
-      score >= 60 ? 'C' :
-      score >= 45 ? 'D' : 'F'
+    const scoreResult = scoreSecurityControls(controls)
 
     return NextResponse.json({
-      score,
-      grade,
+      score: scoreResult.score,
+      grade: scoreResult.grade,
       kpis: {
-        criticalFindings: cisChecks.filter(c => !c.pass && c.severity === 'critical').length,
-        highFindings:     cisChecks.filter(c => !c.pass && c.severity === 'high').length,
+        criticalFindings: controls.filter(c => c.pass === false && c.severity === 'critical').length,
+        highFindings:     controls.filter(c => c.pass === false && c.severity === 'high').length,
         privilegedContainers: privilegedPods.length,
         latestTagImages:      latestTagContainers.length,
         noLimitsContainers:   noLimitsContainers.length,
+        noCpuLimitContainers: noCpuLimitContainers.length,
+        noMemoryLimitContainers: noMemoryLimitContainers.length,
         namespacesWithoutNetpol: nsWithoutNetpol,
         namespacesWithoutPsa:    nsWithoutPsa,
         wildcardRoles:  wildcardRoles.length,
-        falcoRunning,
+        falcoDetected: falcoStatus.detected,
+        falcoRunning: falcoStatus.running,
         falcoPods,
+        falcoDesiredPods: falcoStatus.desiredPods,
         totalUserNS,
-        activeThreats:  threats.length,
       },
-      cis: {
-        checks: cisChecks,
-        passed: cisChecks.filter(c => c.pass).length,
-        failed: cisChecks.filter(c => !c.pass).length,
+      controls: {
+        checks: controls,
+        passed: scoreResult.passed,
+        failed: scoreResult.failed,
+        unknown: scoreResult.unknown,
+        assessed: scoreResult.assessed,
       },
       rbac: {
         clusterAdminBindings,
@@ -386,7 +384,7 @@ export async function GET() {
         hostPath:        hostPathPods,
       },
       namespaces: nsAnalysis,
-      threats: threats.slice(0, 100),
+      warningEvents: warningEvents.slice(0, 100),
       source: 'live',
     })
   } catch (err) {

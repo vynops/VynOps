@@ -10,14 +10,14 @@ import {
 } from 'lucide-react'
 import { useLiveData } from '@/hooks/useLiveData'
 import { cn, timeAgo } from '@/lib/utils'
-import { useDashboardStore } from '@/store'
+import { getClusterHeaders, useDashboardStore } from '@/store'
 import { useSession } from 'next-auth/react'
 import type { FixType } from '@/app/api/security/fix/shared'
 
 // -- Types ------------------------------------------------------------------
 interface CisCheck {
   id: string; category: string; name: string
-  pass: boolean; severity: 'critical' | 'high' | 'medium' | 'low'
+  pass: boolean | null; severity: 'critical' | 'high' | 'medium' | 'low'
   detail: string; count: number
 }
 interface RbacBinding {
@@ -32,23 +32,29 @@ interface WildcardRole {
   createdAt: string
 }
 interface WorkloadFinding {
-  pod: string; ns: string; container: string; image?: string
+  pod: string; ns: string; container: string; containerType?: 'containers' | 'initContainers'; image?: string
+  missingCpuLimit?: boolean; missingMemoryLimit?: boolean
+  fixable?: boolean
 }
-interface NsRow { name: string; hasNetpol: boolean; psaLevel: string | null; workloadRisks: number }
-interface ThreatEvent {
+interface NsRow {
+  name: string; hasPolicy: boolean; defaultDenyIngress: boolean; defaultDenyEgress: boolean
+  psaLevel: string | null; workloadRisks: number
+}
+interface WarningEvent {
   id: string; reason: string; message: string; ns: string; kind: string
-  objName: string; count: number; lastTime: string; severity: 'critical' | 'high' | 'medium'
+  objName: string; count: number; lastTime: string
+  priority: 'critical' | 'high' | 'medium' | 'unclassified'
 }
 interface SecurityData {
-  score: number; grade: string
+  score: number | null; grade: string
   kpis: {
     criticalFindings: number; highFindings: number; privilegedContainers: number
-    latestTagImages: number; noLimitsContainers: number
+    latestTagImages: number; noLimitsContainers: number; noCpuLimitContainers: number; noMemoryLimitContainers: number
     namespacesWithoutNetpol: number; namespacesWithoutPsa: number
-    wildcardRoles: number; falcoRunning: boolean; falcoPods: number
-    totalUserNS: number; activeThreats: number
+    wildcardRoles: number; falcoRunning: boolean; falcoDetected: boolean
+    falcoPods: number; falcoDesiredPods: number; totalUserNS: number
   }
-  cis: { checks: CisCheck[]; passed: number; failed: number }
+  controls: { checks: CisCheck[]; passed: number; failed: number; unknown: number; assessed: number }
   rbac: {
     clusterAdminBindings: RbacBinding[]; wildcardRoles: WildcardRole[]
     clusterRoleBindings: RbacBinding[]; totalNonSystemCRBs: number
@@ -60,25 +66,25 @@ interface SecurityData {
     hostPath: WorkloadFinding[]
   }
   namespaces: NsRow[]
-  threats: ThreatEvent[]
+  warningEvents: WarningEvent[]
   source: string
 }
 
 const EMPTY: SecurityData = {
-  score: 0, grade: '-',
+  score: null, grade: '-',
   kpis: {
     criticalFindings: 0, highFindings: 0, privilegedContainers: 0,
-    latestTagImages: 0, noLimitsContainers: 0, namespacesWithoutNetpol: 0,
-    namespacesWithoutPsa: 0, wildcardRoles: 0, falcoRunning: false,
-    falcoPods: 0, totalUserNS: 0, activeThreats: 0,
+    latestTagImages: 0, noLimitsContainers: 0, noCpuLimitContainers: 0, noMemoryLimitContainers: 0,
+    namespacesWithoutNetpol: 0, namespacesWithoutPsa: 0, wildcardRoles: 0, falcoRunning: false, falcoDetected: false,
+    falcoPods: 0, falcoDesiredPods: 0, totalUserNS: 0,
   },
-  cis: { checks: [], passed: 0, failed: 0 },
+  controls: { checks: [], passed: 0, failed: 0, unknown: 0, assessed: 0 },
   rbac: { clusterAdminBindings: [], wildcardRoles: [], clusterRoleBindings: [], totalNonSystemCRBs: 0 },
   workloads: { privileged: [], latestTags: [], noLimits: [], noReadOnlyRootFs: [], allowPrivEsc: [], hostNetwork: [], hostPath: [] },
-  namespaces: [], threats: [], source: 'loading',
+  namespaces: [], warningEvents: [], source: 'loading',
 }
 
-const TABS = ['Overview', 'Compliance', 'RBAC', 'Workloads', 'Threats'] as const
+const TABS = ['Overview', 'Controls', 'RBAC', 'Workloads', 'Warning Events'] as const
 type Tab = typeof TABS[number]
 
 // ── Fix modal / button ────────────────────────────────────────────────────────
@@ -88,6 +94,7 @@ interface FixTarget {
   namespace:      string
   podName?:       string
   containerName?: string
+  containerType?: 'containers' | 'initContainers'
 }
 
 function FixModal({ target, onConfirm, onClose, loading, result }: {
@@ -169,12 +176,13 @@ function FixButton({ target, onFixed, canFix }: {
     try {
       const r = await fetch('/api/security/fix', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getClusterHeaders() },
         body:    JSON.stringify({
           type:          target.type,
           namespace:     target.namespace,
           podName:       target.podName,
           containerName: target.containerName,
+          containerType: target.containerType,
         }),
       })
       const d = await r.json()
@@ -227,9 +235,9 @@ const SCORE_RING: Record<string, string> = {
   D: 'stroke-orange-400', F: 'stroke-danger',
 }
 
-function ScoreGauge({ score, grade }: { score: number; grade: string }) {
+function ScoreGauge({ score, grade }: { score: number | null; grade: string }) {
   const r = 52; const circ = 2 * Math.PI * r
-  const offset = circ - (score / 100) * circ
+  const offset = score === null ? circ : circ - (score / 100) * circ
   return (
     <div className="relative w-36 h-36 flex-shrink-0">
       <svg className="w-full h-full -rotate-90" viewBox="0 0 120 120">
@@ -241,36 +249,40 @@ function ScoreGauge({ score, grade }: { score: number; grade: string }) {
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className={cn('text-3xl font-black tabular-nums', GRADE_CLR[grade] ?? 'text-surface-400')}>{grade}</span>
-        <span className="text-sm font-semibold text-white tabular-nums">{score}%</span>
+        <span className={cn('text-3xl font-black tabular-nums', GRADE_CLR[grade] ?? 'text-surface-400')}>{score === null ? '—' : grade}</span>
+        <span className="text-sm font-semibold text-white tabular-nums">{score === null ? 'Not scored' : `${score}%`}</span>
       </div>
     </div>
   )
 }
 
-function KpiCard({ label, value, sub, color = 'text-white', warn = false }: {
-  label: string; value: string | number; sub?: string; color?: string; warn?: boolean
+function KpiCard({ label, value, sub, color = 'text-white', warn = false, onClick }: {
+  label: string; value: string | number; sub?: string; color?: string; warn?: boolean; onClick?: () => void
 }) {
-  return (
-    <div className={cn('rounded-2xl bg-surface-900 border p-4 flex flex-col gap-1', warn ? 'border-danger/30' : 'border-surface-800')}>
+  const content = <>
       <span className="text-2xs text-surface-500 uppercase tracking-wider font-medium">{label}</span>
       <span className={cn('text-2xl font-black tabular-nums', color)}>{value}</span>
       {sub && <span className="text-2xs text-surface-500">{sub}</span>}
-    </div>
-  )
+  </>
+  const className = cn('rounded-2xl bg-surface-900 border p-4 flex flex-col gap-1', warn ? 'border-danger/30' : 'border-surface-800', onClick && 'w-full text-left hover:border-brand-500/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 cursor-pointer')
+  return onClick
+    ? <button type="button" className={className} onClick={onClick} aria-label={`${label}: ${value}. Open related findings.`}>{content}</button>
+    : <div className={className}>{content}</div>
 }
 
 function CisRow({ check }: { check: CisCheck }) {
   const [open, setOpen] = useState(false)
+  const unknown = check.pass === null
   return (
-    <div className={cn('rounded-xl border transition-all', check.pass ? 'border-surface-800 bg-surface-900/60' : 'border-danger/20 bg-danger/5')}>
+    <div className={cn('rounded-xl border transition-all', check.pass === true ? 'border-surface-800 bg-surface-900/60' : unknown ? 'border-surface-700 bg-surface-900/40' : 'border-danger/20 bg-danger/5')}>
       <button className="w-full flex items-center gap-3 px-4 py-3 text-left" onClick={() => setOpen(o => !o)}>
-        {check.pass
+        {check.pass === true
           ? <CheckCircle2 className="w-4 h-4 text-success flex-shrink-0" />
+          : unknown ? <AlertTriangle className="w-4 h-4 text-surface-500 flex-shrink-0" />
           : <XCircle className="w-4 h-4 text-danger flex-shrink-0" />}
         <span className="text-2xs font-mono text-surface-500 w-14 flex-shrink-0">{check.id}</span>
         <span className="flex-1 text-sm text-white">{check.name}</span>
-        <span className={cn('text-2xs px-1.5 py-0.5 rounded border font-medium capitalize flex-shrink-0', SEV_CLR[check.severity])}>{check.severity}</span>
+        <span className={cn('text-2xs px-1.5 py-0.5 rounded border font-medium capitalize flex-shrink-0', unknown ? 'text-surface-400 border-surface-700 bg-surface-800' : SEV_CLR[check.severity])}>{unknown ? 'Not assessed' : check.pass ? 'Pass' : check.severity}</span>
         <ChevronDown className={cn('w-3.5 h-3.5 text-surface-500 flex-shrink-0 transition-transform', open && 'rotate-180')} />
       </button>
       <AnimatePresence initial={false}>
@@ -285,14 +297,15 @@ function CisRow({ check }: { check: CisCheck }) {
   )
 }
 
-function WorkloadSection({ label, Icon, color, items, note, fixType, onFixed, canFix }: {
+function WorkloadSection({ label, Icon, color, items, note, fixType, onFixed, canFix, initiallyOpen }: {
   label: string; Icon: React.ElementType; color: string
   items: WorkloadFinding[]; note: string
   fixType?: FixType
   onFixed?: () => void
   canFix?: boolean
+  initiallyOpen?: boolean
 }) {
-  const [open, setOpen] = useState(items.length > 0 && items.length <= 5)
+  const [open, setOpen] = useState(initiallyOpen ?? (items.length > 0 && items.length <= 5))
   return (
     <div className={cn('rounded-2xl border transition-all', items.length === 0 ? 'border-surface-800 bg-surface-900/50' : 'border-surface-700 bg-surface-900')}>
       <button className="w-full flex items-center gap-3 px-4 py-3.5 text-left" onClick={() => setOpen(o => !o)}>
@@ -302,7 +315,7 @@ function WorkloadSection({ label, Icon, color, items, note, fixType, onFixed, ca
             : <Icon className={cn('w-4 h-4', color)} />}
         </div>
         <span className="flex-1 text-sm font-medium text-white">{label}</span>
-        {fixType && items.length > 0 && canFix && (
+        {fixType && items.some(item => item.fixable) && canFix && (
           <span className="text-2xs px-2 py-0.5 rounded-lg bg-brand-500/10 text-brand-400 border border-brand-500/20 flex items-center gap-1 mr-1">
             <Zap className="w-2.5 h-2.5" /> auto-fixable
           </span>
@@ -319,9 +332,11 @@ function WorkloadSection({ label, Icon, color, items, note, fixType, onFixed, ca
               {items.slice(0, 20).map((item, i) => (
                 <div key={i} className="flex items-center gap-2 text-xs py-1.5 border-b border-surface-800/50 last:border-0">
                   <span className="font-mono text-surface-300 flex-1 truncate">{item.ns}/{item.pod}</span>
-                  <span className="font-mono text-surface-500 flex-shrink-0">{item.container}</span>
+                  <span className="font-mono text-surface-500 flex-shrink-0">{item.containerType === 'initContainers' ? 'init:' : ''}{item.container}</span>
+                  {item.missingCpuLimit && <span className="text-2xs text-warning">CPU limit missing</span>}
+                  {item.missingMemoryLimit && <span className="text-2xs text-warning">Memory limit missing</span>}
                   {item.image && <span className="font-mono text-brand-400/70 text-2xs truncate max-w-40">{item.image.split('/').pop()}</span>}
-                  {fixType && (
+                  {fixType && item.fixable && (
                     <FixButton
                       canFix={!!canFix}
                       onFixed={onFixed}
@@ -330,10 +345,12 @@ function WorkloadSection({ label, Icon, color, items, note, fixType, onFixed, ca
                         label:         fixType === 'set_no_priv_esc'     ? 'Set allowPrivilegeEscalation: false'
                                      : fixType === 'remove_host_network'  ? 'Set hostNetwork: false'
                                      : fixType === 'add_resource_limits'  ? 'Add CPU + memory limits (500m / 256Mi)'
+                                     : fixType === 'set_read_only_root_fs' ? 'Set readOnlyRootFilesystem: true'
                                      : 'Apply fix',
                         namespace:     item.ns,
                         podName:       item.pod,
                         containerName: item.container,
+                        containerType: item.containerType,
                       }}
                     />
                   )}
@@ -362,23 +379,62 @@ function SecurityInner() {
   const { activeCluster } = useDashboardStore()
   const { data: session } = useSession()
   const role    = (session?.user as any)?.role ?? ''
-  const canFix  = role === 'admin' || role === 'operator'
   const [tab, setTab] = useState<Tab>(() => {
     const t = searchParams.get('tab')
     return (TABS as readonly string[]).includes(t ?? '') ? t as Tab : 'Overview'
   })
+  const [controlsSeverity, setControlsSeverity] = useState<CisCheck['severity'] | null>(() => {
+    const severity = searchParams.get('severity')
+    return severity === 'critical' || severity === 'high' || severity === 'medium' || severity === 'low' ? severity : null
+  })
+  const [namespaceFinding, setNamespaceFinding] = useState<'network-policy' | 'psa-enforce' | null>(() => {
+    const finding = searchParams.get('namespaceFinding')
+    return finding === 'network-policy' || finding === 'psa-enforce' ? finding : null
+  })
+  const [workloadFinding, setWorkloadFinding] = useState<'latest-tags' | 'cpu-limits' | 'memory-limits' | null>(() => {
+    const finding = searchParams.get('workloadFinding')
+    return finding === 'latest-tags' || finding === 'cpu-limits' || finding === 'memory-limits' ? finding : null
+  })
   const { data, isLive, refresh, loading, error } = useLiveData<SecurityData>(
     '/api/security', EMPTY, undefined, 60_000,
   )
+  const canFix = isLive && (role === 'admin' || role === 'operator')
   const [lastScanned, setLastScanned] = useState<Date | null>(null)
   useEffect(() => { if (data !== EMPTY) setLastScanned(new Date()) }, [data])
-  const { kpis, cis, rbac, workloads, namespaces, threats } = data
+  const hasScan = lastScanned !== null
+  const displayCount = (value: number) => hasScan ? value : '—'
+  const { kpis, controls, rbac, workloads, namespaces, warningEvents } = data
 
-  const cisByCategory: Record<string, CisCheck[]> = {}
-  for (const c of cis.checks) {
-    if (!cisByCategory[c.category]) cisByCategory[c.category] = []
-    cisByCategory[c.category].push(c)
+  const navigateToFinding = (targetTab: Tab, filter: Record<string, string>) => {
+    setTab(targetTab)
+    setControlsSeverity((filter.severity as CisCheck['severity'] | undefined) ?? null)
+    setNamespaceFinding((filter.namespaceFinding as 'network-policy' | 'psa-enforce' | undefined) ?? null)
+    setWorkloadFinding((filter.workloadFinding as 'latest-tags' | 'cpu-limits' | 'memory-limits' | undefined) ?? null)
+    router.replace(`?${new URLSearchParams({ tab: targetTab, ...filter }).toString()}`, { scroll: false })
   }
+
+  const clearFindingFilter = () => navigateToFinding(tab, {})
+
+  useEffect(() => {
+    if (tab !== 'Overview' || !namespaceFinding) return
+    requestAnimationFrame(() => document.getElementById('namespace-risk-matrix')?.scrollIntoView({ block: 'start' }))
+  }, [tab, namespaceFinding])
+
+  const controlsByCategory: Record<string, CisCheck[]> = {}
+  for (const c of controls.checks.filter(check => !controlsSeverity || check.severity === controlsSeverity)) {
+    if (!controlsByCategory[c.category]) controlsByCategory[c.category] = []
+    controlsByCategory[c.category].push(c)
+  }
+  const filteredNamespaces = namespaces.filter(ns =>
+    !namespaceFinding || (namespaceFinding === 'network-policy' ? !ns.hasPolicy : !ns.psaLevel)
+  )
+  const focusedWorkload = workloadFinding === 'latest-tags'
+    ? { label: ':latest Image Tags', Icon: Package, color: 'text-warning', items: workloads.latestTags, note: 'Use pinned version tags or digest references (image@sha256:...) to ensure reproducible, auditable deployments.' }
+    : workloadFinding === 'cpu-limits'
+      ? { label: 'Missing CPU Limit', Icon: Zap, color: 'text-warning', items: workloads.noLimits.filter(item => item.missingCpuLimit), note: 'These containers are missing CPU limits.' }
+      : workloadFinding === 'memory-limits'
+        ? { label: 'Missing Memory Limit', Icon: Zap, color: 'text-warning', items: workloads.noLimits.filter(item => item.missingMemoryLimit), note: 'These containers are missing memory limits.' }
+        : null
   const catOrder = ['Network Policies', 'Pod Security Admission', 'RBAC', 'Pod Security', 'Image Security', 'Resource Management', 'Secrets Management']
 
   return (
@@ -389,15 +445,15 @@ function SecurityInner() {
             <Shield className="w-5 h-5 text-brand-400" /> Security Posture
           </h1>
           <p className="text-xs text-surface-500 mt-0.5">
-            {activeCluster && <><span className="text-surface-300 font-medium">{activeCluster.name ?? activeCluster.displayName}</span>{' · '}</>}CIS K8s Benchmark v1.8 · {cis.passed}/{cis.checks.length} checks passing
-            {kpis.falcoRunning && <span className="text-success ml-2">· Falco runtime active ({kpis.falcoPods} nodes)</span>}
+            {activeCluster && <><span className="text-surface-300 font-medium">{activeCluster.name ?? activeCluster.displayName}</span>{' · '}</>}{hasScan ? `Selected security controls · ${controls.assessed}/${controls.checks.length} assessed` : 'Security scan unavailable'}
+            {kpis.falcoDetected && <span className={cn('ml-2', kpis.falcoRunning ? 'text-success' : 'text-warning')}>· Falco DaemonSet {kpis.falcoRunning ? `${kpis.falcoPods}/${kpis.falcoDesiredPods} ready` : 'not ready'}</span>}
             {lastScanned && <span className="text-surface-600 ml-2" suppressHydrationWarning>· scanned {timeAgo(lastScanned.toISOString())}</span>}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {kpis.falcoRunning && (
+          {kpis.falcoDetected && (
             <span className="flex items-center gap-1.5 px-2.5 py-1 bg-success/10 border border-success/20 rounded-xl text-xs text-success">
-              <Eye className="w-3 h-3" /> Falco Runtime
+              <Eye className="w-3 h-3" /> Falco DaemonSet
             </span>
           )}
           {isLive
@@ -409,6 +465,7 @@ function SecurityInner() {
               <AlertTriangle className="w-3 h-3" /> {error}
             </span>
           )}
+          {!isLive && hasScan && <span className="text-2xs text-warning">Showing last successful scan</span>}
           <button onClick={refresh} disabled={loading}
             className="w-8 h-8 flex items-center justify-center bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-xl text-surface-400 hover:text-white transition-all disabled:opacity-50">
             <RefreshCw className={cn('w-3.5 h-3.5', loading && 'animate-spin')} />
@@ -424,12 +481,12 @@ function SecurityInner() {
 
       <div className="flex items-center gap-1 px-3 sm:px-6 pt-2 sm:pt-3 border-b border-surface-800 overflow-x-auto scrollbar-none flex-shrink-0">
         {TABS.map(t => (
-          <button key={t} onClick={() => { setTab(t); router.replace(`?tab=${encodeURIComponent(t)}`, { scroll: false }) }}
+          <button key={t} onClick={() => navigateToFinding(t, {})}
             className={cn('px-3 py-2 text-sm font-medium border-b-2 transition-all',
               tab === t ? 'border-brand-500 text-brand-400' : 'border-transparent text-surface-400 hover:text-surface-300')}>
             {t}
-            {t === 'Threats' && threats.length > 0 && <span className="ml-1.5 text-2xs px-1.5 py-0.5 bg-warning/20 text-warning rounded-full">{threats.length}</span>}
-            {t === 'Compliance' && cis.failed > 0 && <span className="ml-1.5 text-2xs px-1.5 py-0.5 bg-danger/20 text-danger rounded-full">{cis.failed}</span>}
+            {t === 'Warning Events' && warningEvents.length > 0 && <span className="ml-1.5 text-2xs px-1.5 py-0.5 bg-warning/20 text-warning rounded-full">{warningEvents.length}</span>}
+            {t === 'Controls' && controls.failed > 0 && <span className="ml-1.5 text-2xs px-1.5 py-0.5 bg-danger/20 text-danger rounded-full">{controls.failed}</span>}
           </button>
         ))}
       </div>
@@ -443,23 +500,25 @@ function SecurityInner() {
                 <ScoreGauge score={data.score} grade={data.grade} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline gap-2 mb-1">
-                    <h2 className="text-base font-bold text-white">CIS K8s Benchmark Score</h2>
-                    <span className="text-2xs text-surface-500">v1.8 · {cis.checks.length} checks · {lastScanned ? <span suppressHydrationWarning>scanned {timeAgo(lastScanned.toISOString())}</span> : 'live data'}</span>
+                    <h2 className="text-base font-bold text-white">Selected Controls Score</h2>
+                    <span className="text-2xs text-surface-500">Custom weighted score · {controls.assessed}/{controls.checks.length} assessed · {controls.unknown} unknown · {lastScanned ? <span suppressHydrationWarning>scanned {timeAgo(lastScanned.toISOString())}</span> : 'waiting for scan'}</span>
                   </div>
                   <p className="text-xs text-surface-400 mb-4">
-                    {data.score >= 90 ? 'Excellent posture · production hardened.' :
-                     data.score >= 75 ? 'Good posture · minor gaps remain.' :
-                     data.score >= 60 ? 'Fair posture · address high-severity findings.' :
-                     data.score >= 45 ? 'Weak posture · significant hardening required.' :
-                     'Critical posture · immediate remediation needed.'}
+                    {data.score === null ? 'No controls were available to score.' :
+                     data.score >= 90 ? 'Strong results across assessed controls; this is not a full benchmark certification.' :
+                     data.score >= 75 ? 'Good results across assessed controls; review remaining findings.' :
+                     data.score >= 60 ? 'Mixed results across assessed controls; address high-severity findings.' :
+                     data.score >= 45 ? 'Significant gaps remain in the assessed controls.' :
+                     'Many assessed controls have findings; review them before making changes.'}
                   </p>
                   <div className="space-y-2">
-                    {catOrder.filter(c => cisByCategory[c]).map(cat => {
-                      const checks = cisByCategory[cat]
-                      const pct = Math.round((checks.filter(c => c.pass).length / checks.length) * 100)
+                    {catOrder.filter(c => controlsByCategory[c]).map(cat => {
+                      const checks = controlsByCategory[cat]
+                      const assessed = checks.filter(c => c.pass !== null)
+                      const pct = assessed.length ? Math.round((assessed.filter(c => c.pass).length / assessed.length) * 100) : 0
                       return (
                         <div key={cat} className="flex items-center gap-3">
-                          <span className="text-2xs text-surface-400 w-44 flex-shrink-0">{cat}</span>
+                          <span className="text-2xs text-surface-400 w-44 flex-shrink-0">{cat}{checks.some(c => c.pass === null) ? ' *' : ''}</span>
                           <div className="flex-1 h-1.5 rounded-full bg-surface-800">
                             <div className={cn('h-full rounded-full', pct === 100 ? 'bg-success' : pct >= 50 ? 'bg-warning' : 'bg-danger')} style={{ width: `${pct}%` }} />
                           </div>
@@ -472,13 +531,14 @@ function SecurityInner() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-              <KpiCard label="Critical Findings" value={kpis.criticalFindings} color={kpis.criticalFindings > 0 ? 'text-danger' : 'text-success'} warn={kpis.criticalFindings > 0} sub="CIS checks" />
-              <KpiCard label="High Findings" value={kpis.highFindings} color={kpis.highFindings > 0 ? 'text-orange-400' : 'text-success'} sub="CIS checks" />
-              <KpiCard label="Unprotected NS" value={`${kpis.namespacesWithoutNetpol}/${kpis.totalUserNS}`} color={kpis.namespacesWithoutNetpol > 0 ? 'text-danger' : 'text-success'} sub="no network policy" />
-              <KpiCard label="No PSA Labels" value={`${kpis.namespacesWithoutPsa}/${kpis.totalUserNS}`} color={kpis.namespacesWithoutPsa > 0 ? 'text-danger' : 'text-success'} sub="no pod sec admission" />
-              <KpiCard label=":latest Images" value={kpis.latestTagImages} color={kpis.latestTagImages > 0 ? 'text-warning' : 'text-success'} sub="mutable tags" />
-              <KpiCard label="No Limits" value={kpis.noLimitsContainers} color={kpis.noLimitsContainers > 0 ? 'text-warning' : 'text-success'} sub="containers" />
+            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-3">
+              <KpiCard label="Critical Findings" value={displayCount(kpis.criticalFindings)} color={!hasScan ? 'text-surface-400' : kpis.criticalFindings > 0 ? 'text-danger' : 'text-success'} warn={hasScan && kpis.criticalFindings > 0} sub="assessed controls" onClick={hasScan && kpis.criticalFindings > 0 ? () => navigateToFinding('Controls', { severity: 'critical' }) : undefined} />
+              <KpiCard label="High Findings" value={displayCount(kpis.highFindings)} color={!hasScan ? 'text-surface-400' : kpis.highFindings > 0 ? 'text-orange-400' : 'text-success'} sub="assessed controls" onClick={hasScan && kpis.highFindings > 0 ? () => navigateToFinding('Controls', { severity: 'high' }) : undefined} />
+              <KpiCard label="No NetworkPolicy" value={hasScan && kpis.totalUserNS > 0 ? `${kpis.namespacesWithoutNetpol}/${kpis.totalUserNS}` : '—'} color={!hasScan || kpis.totalUserNS === 0 ? 'text-surface-400' : kpis.namespacesWithoutNetpol > 0 ? 'text-danger' : 'text-success'} sub="user namespaces" onClick={hasScan && kpis.namespacesWithoutNetpol > 0 ? () => navigateToFinding('Overview', { namespaceFinding: 'network-policy' }) : undefined} />
+              <KpiCard label="Missing PSA Enforce" value={hasScan && kpis.totalUserNS > 0 ? `${kpis.namespacesWithoutPsa}/${kpis.totalUserNS}` : '—'} color={!hasScan || kpis.totalUserNS === 0 ? 'text-surface-400' : kpis.namespacesWithoutPsa > 0 ? 'text-danger' : 'text-success'} sub="user namespaces" onClick={hasScan && kpis.namespacesWithoutPsa > 0 ? () => navigateToFinding('Overview', { namespaceFinding: 'psa-enforce' }) : undefined} />
+              <KpiCard label=":latest Images" value={displayCount(kpis.latestTagImages)} color={!hasScan ? 'text-surface-400' : kpis.latestTagImages > 0 ? 'text-warning' : 'text-success'} sub="mutable tags" onClick={hasScan && kpis.latestTagImages > 0 ? () => navigateToFinding('Workloads', { workloadFinding: 'latest-tags' }) : undefined} />
+              <KpiCard label="Missing CPU Limit" value={displayCount(kpis.noCpuLimitContainers)} color={!hasScan ? 'text-surface-400' : kpis.noCpuLimitContainers > 0 ? 'text-warning' : 'text-success'} sub="containers" onClick={hasScan && kpis.noCpuLimitContainers > 0 ? () => navigateToFinding('Workloads', { workloadFinding: 'cpu-limits' }) : undefined} />
+              <KpiCard label="Missing Memory Limit" value={displayCount(kpis.noMemoryLimitContainers)} color={!hasScan ? 'text-surface-400' : kpis.noMemoryLimitContainers > 0 ? 'text-warning' : 'text-success'} sub="containers" onClick={hasScan && kpis.noMemoryLimitContainers > 0 ? () => navigateToFinding('Workloads', { workloadFinding: 'memory-limits' }) : undefined} />
             </div>
 
             <div className={cn('rounded-2xl border p-4 flex items-center gap-4', kpis.falcoRunning ? 'bg-success/5 border-success/20' : 'bg-surface-900 border-surface-800')}>
@@ -486,41 +546,50 @@ function SecurityInner() {
                 <Eye className={cn('w-5 h-5', kpis.falcoRunning ? 'text-success' : 'text-surface-500')} />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-semibold text-white mb-0.5">Falco Runtime Security � {kpis.falcoRunning ? 'Active' : 'Not Detected'}</div>
+                <div className="text-sm font-semibold text-white mb-0.5">Falco Runtime Security · {!hasScan ? 'Status unavailable' : kpis.falcoRunning ? 'Ready' : kpis.falcoDetected ? 'Detected, not ready' : 'Not detected'}</div>
                 <p className="text-xs text-surface-400">
-                  {kpis.falcoRunning
-                    ? `${kpis.falcoPods} Falco DaemonSet pods running (one per node). Kernel-level syscall monitoring active. Detects privilege escalation, unexpected network connections, and file access anomalies in real time.`
-                    : 'No Falco runtime security detected. Install Falco DaemonSet for kernel-level threat detection.'}
+                  {!hasScan ? 'A successful cluster scan is required to detect Falco.' : kpis.falcoDetected
+                    ? `${kpis.falcoPods}/${kpis.falcoDesiredPods} Falco DaemonSet pods are ready. Readiness does not confirm event delivery or rule coverage.`
+                    : 'No Falco DaemonSet detected by image or app label.'}
                 </p>
               </div>
-              {kpis.falcoRunning && <span className="text-2xs px-2 py-1 bg-success/20 text-success rounded-xl font-medium flex-shrink-0">Runtime Active</span>}
+              {kpis.falcoDetected && <span className={cn('text-2xs px-2 py-1 rounded-xl font-medium flex-shrink-0', kpis.falcoRunning ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning')}>{kpis.falcoRunning ? 'Pods Ready' : 'Not Ready'}</span>}
             </div>
 
-            <div className="rounded-2xl bg-surface-900 border border-surface-800 overflow-hidden">
+            <div id="namespace-risk-matrix" className="rounded-2xl bg-surface-900 border border-surface-800 overflow-hidden scroll-mt-4">
               <div className="px-4 py-3 border-b border-surface-800">
-                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <Globe className="w-4 h-4 text-brand-400" /> Namespace Risk Matrix
-                </h3>
+                <div className="flex items-center gap-3">
+                  <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-brand-400" /> Namespace Risk Matrix
+                  </h3>
+                  {namespaceFinding && <button type="button" onClick={clearFindingFilter} className="text-2xs text-brand-400 hover:text-brand-300 hover:underline">Clear namespace filter</button>}
+                </div>
               </div>
               <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-surface-800">
-                    {['Namespace', 'Network Policy', 'Pod Security (PSA)', 'Workload Risks', 'Risk Level'].map(h => (
+                    {['Namespace', 'NetworkPolicy coverage', 'Pod Security Admission', 'Workload Findings', 'Risk Level'].map(h => (
                       <th key={h} className="px-4 py-2.5 text-left text-2xs font-semibold text-surface-500 uppercase tracking-wider">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {namespaces.map(ns => {
-                    const risk = !ns.hasNetpol && !ns.psaLevel ? 'critical' : !ns.hasNetpol || !ns.psaLevel ? 'high' : ns.workloadRisks > 5 ? 'medium' : 'low'
+                  {filteredNamespaces.length === 0 && (
+                    <tr><td colSpan={5} className="px-4 py-6 text-center text-xs text-surface-500">{!hasScan ? 'Namespace scan unavailable' : namespaces.length === 0 ? 'No user namespaces found' : 'No namespaces match this finding'}</td></tr>
+                  )}
+                  {filteredNamespaces.map(ns => {
+                    const hasDefaultDeny = ns.defaultDenyIngress && ns.defaultDenyEgress
+                    const risk = !ns.hasPolicy && !ns.psaLevel ? 'critical' : !hasDefaultDeny || !ns.psaLevel ? 'high' : ns.workloadRisks > 5 ? 'medium' : 'low'
                     return (
                       <tr key={ns.name} className="border-b border-surface-800/50 hover:bg-surface-800/30">
                         <td className="px-4 py-2.5 font-mono text-xs text-white">{ns.name}</td>
                         <td className="px-4 py-2.5">
-                          {ns.hasNetpol
-                            ? <span className="flex items-center gap-1 text-success text-xs"><CheckCircle2 className="w-3 h-3" /> Protected</span>
-                            : <span className="flex items-center gap-1 text-danger text-xs"><XCircle className="w-3 h-3" /> Unprotected</span>}
+                          {!ns.hasPolicy
+                            ? <span className="flex items-center gap-1 text-danger text-xs"><XCircle className="w-3 h-3" /> No policy</span>
+                            : hasDefaultDeny
+                              ? <span className="flex items-center gap-1 text-success text-xs"><CheckCircle2 className="w-3 h-3" /> Default deny both</span>
+                              : <span className="text-warning text-xs">Policy present; no full default deny</span>}
                         </td>
                         <td className="px-4 py-2.5">
                           {ns.psaLevel
@@ -553,29 +622,36 @@ function SecurityInner() {
           </>
         )}
 
-        {tab === 'Compliance' && (
+        {tab === 'Controls' && (
           <>            <div className="rounded-2xl bg-surface-900 border border-surface-800 p-4">
               <div className="flex items-center justify-between mb-3">
                 <div>
-                  <h3 className="text-sm font-semibold text-white">CIS Kubernetes Benchmark v1.8</h3>
-                  <p className="text-2xs text-surface-500 mt-0.5">{cis.passed} passed � {cis.failed} failed � all checks derived from live cluster data</p>
+                  <h3 className="text-sm font-semibold text-white">Selected Security Controls</h3>
+                  <p className="text-2xs text-surface-500 mt-0.5">{hasScan ? `${controls.passed} passed · ${controls.failed} failed · ${controls.unknown} not assessed` : 'No successful scan; results unavailable'}</p>
                 </div>
-                <span className={cn('text-2xl font-black tabular-nums', GRADE_CLR[data.grade] ?? 'text-surface-400')}>{data.score}%</span>
+                <span className={cn('text-2xl font-black tabular-nums', GRADE_CLR[data.grade] ?? 'text-surface-400')}>{data.score === null ? '—' : `${data.score}%`}</span>
               </div>
               <div className="h-2 rounded-full bg-surface-800 overflow-hidden">
-                <div className={cn('h-full rounded-full transition-all duration-700', data.score >= 75 ? 'bg-success' : data.score >= 50 ? 'bg-warning' : 'bg-danger')} style={{ width: `${data.score}%` }} />
+                <div className={cn('h-full rounded-full transition-all duration-700', (data.score ?? 0) >= 75 ? 'bg-success' : (data.score ?? 0) >= 50 ? 'bg-warning' : 'bg-danger')} style={{ width: `${data.score ?? 0}%` }} />
               </div>
             </div>
-            {catOrder.filter(cat => cisByCategory[cat]).map(cat => (
+            {controlsSeverity && (
+              <div className="flex items-center justify-between rounded-lg border border-surface-800 bg-surface-900 px-3 py-2 text-xs">
+                <span className="text-surface-300">Showing {controlsSeverity} findings</span>
+                <button type="button" onClick={clearFindingFilter} className="text-brand-400 hover:text-brand-300 hover:underline">Clear filter</button>
+              </div>
+            )}
+            {catOrder.filter(cat => controlsByCategory[cat]).map(cat => (
               <div key={cat}>
                 <h4 className="text-xs font-semibold text-surface-500 uppercase tracking-wider mb-2 px-1">{cat}</h4>
                 <div className="space-y-1.5">
-                  {cisByCategory[cat].map(check => <CisRow key={check.id} check={check} />)}
+                  {controlsByCategory[cat].map(check => <CisRow key={check.id} check={check} />)}
                 </div>
               </div>
             ))}
+            {controlsSeverity && Object.keys(controlsByCategory).length === 0 && <p className="py-8 text-center text-sm text-surface-500">No {controlsSeverity} findings.</p>}
             <p className="text-2xs text-surface-600 text-center pt-2">
-              Checks derived from live K8s API: pods, namespaces, networkpolicies, RBAC. Some checks (kube-apiserver flags) require audit log access.
+              This custom weighted score covers only the controls listed here; it is not a CIS benchmark certification.
             </p>
           </>
         )}
@@ -676,57 +752,74 @@ function SecurityInner() {
 
         {tab === 'Workloads' && (
           <>
-            <WorkloadSection label="Privileged Containers" Icon={AlertOctagon} color="text-danger"
-              items={workloads.privileged} note="Falco pods run privileged by design for kernel-level syscall monitoring. Non-Falco privileged containers should be remediated." />
-            <WorkloadSection label=":latest Image Tags" Icon={Package} color="text-warning"
-              items={workloads.latestTags} note="Use pinned version tags or digest references (image@sha256:...) to ensure reproducible, auditable deployments." />
-            <WorkloadSection label="No Resource Limits" Icon={Zap} color="text-warning"
-              items={workloads.noLimits} note="Containers without CPU/memory limits can starve co-located workloads. Add resources.limits to all container specs."
-              fixType="add_resource_limits" canFix={canFix} onFixed={refresh} />
-            <WorkloadSection label="Host Path Volumes" Icon={Server} color="text-orange-400"
-              items={workloads.hostPath} note="Pods mounting host filesystem paths can read/write sensitive host data. Replace with PersistentVolumes where possible." />
-            <WorkloadSection label="Host Network Pods" Icon={Network} color="text-orange-400"
-              items={workloads.hostNetwork} note="Pods sharing the host network namespace bypass pod network isolation. Only monitoring/CNI agents should require this."
-              fixType="remove_host_network" canFix={canFix} onFixed={refresh} />
-            <WorkloadSection label="Allow Privilege Escalation" Icon={AlertTriangle} color="text-surface-400"
-              items={workloads.allowPrivEsc} note="Set securityContext.allowPrivilegeEscalation: false on all containers. Enforce via PSA restricted policy."
-              fixType="set_no_priv_esc" canFix={canFix} onFixed={refresh} />
-            <WorkloadSection label="Writable Root Filesystem" Icon={Lock} color="text-warning"
-              items={workloads.noReadOnlyRootFs} note="Set securityContext.readOnlyRootFilesystem: true on all containers. Write mutable data to emptyDir or PVCs instead."
-              fixType="set_read_only_root_fs" canFix={canFix} onFixed={refresh} />
+            {workloadFinding && (
+              <div className="flex items-center justify-between rounded-lg border border-surface-800 bg-surface-900 px-3 py-2 text-xs">
+                <span className="text-surface-300">Focused on {focusedWorkload?.label}</span>
+                <button type="button" onClick={clearFindingFilter} className="text-brand-400 hover:text-brand-300 hover:underline">Show all workload findings</button>
+              </div>
+            )}
+            {focusedWorkload ? (
+              <WorkloadSection label={focusedWorkload.label} Icon={focusedWorkload.Icon} color={focusedWorkload.color}
+                items={focusedWorkload.items} note={focusedWorkload.note} initiallyOpen />
+            ) : (
+              <>
+                <WorkloadSection label="Privileged Containers" Icon={AlertOctagon} color="text-danger"
+                  items={workloads.privileged} note="Falco pods run privileged by design for kernel-level syscall monitoring. Non-Falco privileged containers should be remediated." />
+                <WorkloadSection label=":latest Image Tags" Icon={Package} color="text-warning"
+                  items={workloads.latestTags} note="Use pinned version tags or digest references (image@sha256:...) to ensure reproducible, auditable deployments." />
+                <WorkloadSection label="No Resource Limits" Icon={Zap} color="text-warning"
+                  items={workloads.noLimits} note="Containers without CPU/memory limits can starve co-located workloads. Add resources.limits to all container specs."
+                  fixType="add_resource_limits" canFix={canFix} onFixed={refresh} />
+                <WorkloadSection label="Host Path Volumes" Icon={Server} color="text-orange-400"
+                  items={workloads.hostPath} note="Pods mounting host filesystem paths can read/write sensitive host data. Replace with PersistentVolumes where possible." />
+                <WorkloadSection label="Host Network Pods" Icon={Network} color="text-orange-400"
+                  items={workloads.hostNetwork} note="Pods sharing the host network namespace bypass pod network isolation. Only monitoring/CNI agents should require this."
+                  fixType="remove_host_network" canFix={canFix} onFixed={refresh} />
+                <WorkloadSection label="Allow Privilege Escalation" Icon={AlertTriangle} color="text-surface-400"
+                  items={workloads.allowPrivEsc} note="Set securityContext.allowPrivilegeEscalation: false on all containers. Enforce via PSA restricted policy."
+                  fixType="set_no_priv_esc" canFix={canFix} onFixed={refresh} />
+                <WorkloadSection label="Writable Root Filesystem" Icon={Lock} color="text-warning"
+                  items={workloads.noReadOnlyRootFs} note="Set securityContext.readOnlyRootFilesystem: true on all containers. Write mutable data to emptyDir or PVCs instead."
+                  fixType="set_read_only_root_fs" canFix={canFix} onFixed={refresh} />
+              </>
+            )}
           </>
         )}
 
-        {tab === 'Threats' && (
+        {tab === 'Warning Events' && (
           <>
             <div className={cn('rounded-2xl border p-4 flex items-center gap-4', kpis.falcoRunning ? 'bg-success/5 border-success/20' : 'bg-surface-900 border-surface-800')}>
               <Eye className={cn('w-5 h-5 flex-shrink-0', kpis.falcoRunning ? 'text-success' : 'text-surface-500')} />
               <div>
                 <span className="text-sm font-semibold text-white">
-                  {kpis.falcoRunning ? `Falco Runtime Monitoring · ${kpis.falcoPods} nodes protected` : 'Falco not detected'}
+                  {!hasScan ? 'Falco DaemonSet status unavailable' : kpis.falcoDetected ? `Falco DaemonSet · ${kpis.falcoPods}/${kpis.falcoDesiredPods} ready` : 'Falco DaemonSet not detected'}
                 </span>
                 <p className="text-xs text-surface-400 mt-0.5">
-                  {kpis.falcoRunning
-                    ? 'Syscall-level monitoring active. Detects privilege escalation, shell spawning in containers, unexpected outbound connections, and sensitive file reads.'
-                    : 'Install Falco for runtime threat detection.'}
+                  {!hasScan ? 'A successful cluster scan is required to determine Falco status.' : kpis.falcoRunning ? 'Pod readiness is reported; event delivery and rule coverage are not verified here.' : 'Runtime event coverage is unavailable from this scan.'}
                 </p>
               </div>
             </div>
-            {threats.length === 0
+            {!hasScan
               ? <div className="flex flex-col items-center justify-center py-12 text-surface-500">
-                  <CheckCircle2 className="w-10 h-10 mb-3 text-success opacity-80" />
-                  <p className="text-sm font-medium text-white">No active threats</p>
-                  <p className="text-xs mt-1">No K8s Warning events in the cluster event log</p>
+                  <WifiOff className="w-10 h-10 mb-3 text-surface-500 opacity-80" />
+                  <p className="text-sm font-medium text-white">Warning-event scan unavailable</p>
+                  <p className="text-xs mt-1">Refresh after restoring Kubernetes API connectivity.</p>
                 </div>
-              : threats.map((t, i) => (
+              : warningEvents.length === 0
+              ? <div className="flex flex-col items-center justify-center py-12 text-surface-500">
+                  <Activity className="w-10 h-10 mb-3 text-surface-500 opacity-80" />
+                  <p className="text-sm font-medium text-white">No Kubernetes Warning events returned</p>
+                  <p className="text-xs mt-1">This does not establish that the cluster has no security threats.</p>
+                </div>
+              : warningEvents.map((t, i) => (
                   <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
                     className="rounded-2xl bg-surface-900 border border-surface-800 hover:border-surface-700 p-4 transition-all">
                     <div className="flex items-start gap-3">
-                      <span className={cn('mt-1 w-2 h-2 rounded-full flex-shrink-0', SEV_DOT[t.severity])} />
+                      <span className={cn('mt-1 w-2 h-2 rounded-full flex-shrink-0', SEV_DOT[t.priority] ?? 'bg-surface-500')} />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-medium text-white">{t.reason}</span>
-                          <span className={cn('text-2xs px-1.5 py-0.5 rounded border font-medium capitalize', SEV_CLR[t.severity])}>{t.severity}</span>
+                          <span className={cn('text-2xs px-1.5 py-0.5 rounded border font-medium capitalize', t.priority === 'unclassified' ? 'text-surface-400 border-surface-700 bg-surface-800' : SEV_CLR[t.priority])}>{t.priority}</span>
                           {t.count > 1 && <span className="text-2xs text-surface-500">x{t.count}</span>}
                         </div>
                         <p className="text-xs text-surface-400 mt-1 line-clamp-2">{t.message}</p>

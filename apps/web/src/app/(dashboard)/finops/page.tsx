@@ -17,24 +17,24 @@ import { cn } from '@/lib/utils'
 
 // ── Types ─────────────────────────────────────────────────────────────────
 type NodeRow = {
-  name: string; status: string; cpuCores: number; cpuUsagePct: number
+  name: string; status: string; cpuCores: number; cpuUsagePct: number | null
   memGiB: number; memUsagePct: number; podCount: number; podCapacity: number
   uptimeHours: number; instanceType: string; os: string; arch: string
 }
 interface NsCost {
   namespace: string; workloadCount: number; podCount: number
   cpuRequestedCores: number; memRequestedGiB: number
-  cpuActualCores: number; memActualGiB: number
+  cpuActualCores: number | null; memActualGiB: number | null
   cpuEfficiency: number | null; memEfficiency: number | null; overallEfficiency: number | null
-  costPerMo: number; wastedPerMo: number; costSharePct: number
+  costPerMo: number; wastedPerMo: number | null; costSharePct: number
 }
 interface WorkloadCost {
   namespace: string; kind: string; name: string
   podCount: number; cpuCores: number; memGiB: number; costPerMo: number
 }
 interface PvcInfo {
-  name: string; namespace: string; capacityGiB: number; usedGiB: number
-  usagePct: number; storageClass: string; status: string; costPerMo: number
+  name: string; namespace: string; capacityGiB: number; usedGiB: number | null
+  usagePct: number | null; storageClass: string; status: string; costPerMo: number
 }
 interface Optimization {
   type: string; namespace: string; workload: string
@@ -54,27 +54,29 @@ interface CloudData {
   cluster: { name: string; provider: string; region: string; version: string; namespaceCount: number }
   nodes: NodeRow[]
   cost: {
-    totalPerMo: number; computePerMo: number; storagePerMo: number; wastedPerMo: number
-    cpuEfficiency: number; memEfficiency: number
+    totalPerMo: number; computePerMo: number; storagePerMo: number; wastedPerMo: number | null
+    cpuEfficiency: number | null; memEfficiency: number | null; resourceEfficiency: number | null; usageComplete: boolean
     byNamespace: NsCost[]; byWorkload: WorkloadCost[]
     ratesUsed: { cpuPerCoreHr: number; memPerGiBHr: number; storagePerGiBMo: number }
   }
-  storage: { totalPVCs: number; totalCapacityGiB: number; totalUsedGiB: number; costPerMo: number; pvcs: PvcInfo[] }
+  storage: { totalPVCs: number; totalCapacityGiB: number; totalUsedGiB: number | null; usageComplete: boolean; costPerMo: number; pvcs: PvcInfo[] }
   totalPodCount: number
   optimizations: Optimization[]
+  dataQuality: { scanComplete: boolean; usageComplete: boolean; storageUsageComplete: boolean; nodeUsageComplete: boolean; missingCpuUsageNodes: string[] }
 }
 
 const EMPTY: CloudData = {
   cluster: { name: '—', provider: '—', region: '—', version: '—', namespaceCount: 0 },
   nodes: [],
   cost: {
-    totalPerMo: 0, computePerMo: 0, storagePerMo: 0, wastedPerMo: 0,
-    cpuEfficiency: 0, memEfficiency: 0, byNamespace: [], byWorkload: [],
+    totalPerMo: 0, computePerMo: 0, storagePerMo: 0, wastedPerMo: null,
+    cpuEfficiency: null, memEfficiency: null, resourceEfficiency: null, usageComplete: false, byNamespace: [], byWorkload: [],
     ratesUsed: { cpuPerCoreHr: 0.048, memPerGiBHr: 0.006, storagePerGiBMo: 0.05 },
   },
-  storage: { totalPVCs: 0, totalCapacityGiB: 0, totalUsedGiB: 0, costPerMo: 0, pvcs: [] },
+  storage: { totalPVCs: 0, totalCapacityGiB: 0, totalUsedGiB: null, usageComplete: false, costPerMo: 0, pvcs: [] },
   totalPodCount: 0,
   optimizations: [],
+  dataQuality: { scanComplete: false, usageComplete: false, storageUsageComplete: false, nodeUsageComplete: false, missingCpuUsageNodes: [] },
 }
 
 const TABS = ['Overview', 'Nodes', 'Namespaces', 'Workloads', 'Storage', 'Optimizations'] as const
@@ -135,8 +137,7 @@ const TYPE_LABEL: Record<string, string> = {
   'over-provisioned':     'Over-Provisioned',
   'cpu-over-provisioned': 'CPU Waste',
   'mem-over-provisioned': 'Mem Waste',
-  'workload-rightsizing': 'Right-size',
-  'no-requests':          'No Requests',
+  'no-requests':          'Missing Requests',
   'storage-full':         'Storage Full',
 }
 
@@ -157,17 +158,15 @@ const RISK_INFO: Record<string, { level: RiskLevel; note: string }> = {
   'over-provisioned':     { level: 'low',    note: 'Changes requests only — pods will not be killed. Scheduler re-evaluates placement on next restart.' },
   'cpu-over-provisioned': { level: 'low',    note: 'Reduces CPU requests only. Limits are untouched — pods can still burst if node has free capacity.' },
   'mem-over-provisioned': { level: 'medium', note: 'Memory spikes are silent until OOMKill. Monitor for 24h after applying and watch for pod restarts.' },
-  'workload-rightsizing': { level: 'medium', note: 'Per-workload change triggers a rolling restart. Verify under realistic load before applying to production.' },
   'no-requests':          { level: 'low',    note: 'Adding requests is always safe — improves scheduling decisions and enables HPA. Causes a rolling restart.' },
   'storage-full':         { level: 'high',   note: 'PVC expansion requires StorageClass with allowVolumeExpansion: true. Verify before patching — data loss risk if expansion fails.' },
 }
 
 const OUTCOME_NOTE: Record<string, string> = {
-  'over-provisioned':     'Target is 2.2× peak actual usage — leaves headroom for traffic spikes. Apply during a low-traffic window and monitor pods for 30 min.',
-  'cpu-over-provisioned': 'CPU requests reduced to 2.2× peak. Pods can still burst beyond requests when node capacity allows.',
-  'mem-over-provisioned': 'Memory reduced to 2.2× peak. Watch for OOMKill events — memory usage can spike during GC or batch jobs.',
-  'workload-rightsizing': 'Per-workload right-sizing. Test under peak load in staging first. A rolling restart will occur on apply.',
-  'no-requests':          'No direct cost savings, but prevents scheduler failures and enables autoscaling. Rolling restart on apply.',
+  'over-provisioned':     'This is a namespace-level estimate from current usage samples, not a workload target. Review peak usage and workload-specific requests before making changes.',
+  'cpu-over-provisioned': 'This estimate uses current CPU samples. Validate peak usage and calculate requests per workload before making changes.',
+  'mem-over-provisioned': 'This estimate uses current memory samples. Validate peak usage, startup spikes, and workload-specific requests before making changes.',
+  'no-requests':          'No direct savings are estimated. Set workload-appropriate CPU and memory requests; generic defaults are not prescribed.',
   'storage-full':         'Expands PVC capacity. No downtime expected on most CSI drivers. Verify StorageClass supports live expansion.',
 }
 
@@ -179,7 +178,6 @@ function getVerifyCmd(type: string, ns: string, workload: string): string {
     case 'over-provisioned':     return `kubectl top pods -n ${ns}`
     case 'cpu-over-provisioned': return `kubectl top pods -n ${ns}`
     case 'mem-over-provisioned': return `kubectl top pods -n ${ns} --sort-by=memory`
-    case 'workload-rightsizing': return `kubectl describe ${kind} ${name} -n ${ns}`
     case 'no-requests':          return `kubectl get pods -n ${ns} -o wide`
     case 'storage-full':         return `kubectl get pvc -n ${ns} -o wide`
     default:                     return `kubectl get pods -n ${ns}`
@@ -219,10 +217,11 @@ function ResBar({ label, requested, actual, recommended, unit = 'c', color = 'te
 }
 
 // ── Efficiency gauge (SVG ring) ───────────────────────────────────────────
-function EffGauge({ value, label, size = 80 }: { value: number; label: string; size?: number }) {
+function EffGauge({ value, label, size = 80 }: { value: number | null; label: string; size?: number }) {
   const r = size * 0.38; const circ = 2 * Math.PI * r
-  const dash = (value / 100) * circ
-  const color = value >= 70 ? '#22c55e' : value >= 40 ? '#f59e0b' : '#ef4444'
+  const pct = value ?? 0
+  const dash = value === null ? 0 : (pct / 100) * circ
+  const color = value === null ? '#64748b' : pct >= 70 ? '#22c55e' : pct >= 40 ? '#f59e0b' : '#ef4444'
   return (
     <div className="flex flex-col items-center gap-2">
       <div className="relative" style={{ width: size, height: size }}>
@@ -233,7 +232,7 @@ function EffGauge({ value, label, size = 80 }: { value: number; label: string; s
             style={{ transition: 'stroke-dasharray 0.8s ease' }} />
         </svg>
         <div className="absolute inset-0 flex items-center justify-center">
-          <p className="text-sm font-bold tabular-nums" style={{ color }}>{value}%</p>
+          <p className="text-sm font-bold tabular-nums" style={{ color }}>{value === null ? '—' : `${value}%`}</p>
         </div>
       </div>
       <p className="text-2xs text-surface-500">{label}</p>
@@ -290,6 +289,7 @@ function CloudInner() {
   const [rateMem,   setRateMem]   = useState('')
   const [rateStore, setRateStore] = useState('')
   const [rateSaved, setRateSaved] = useState(false)
+  const [rateError, setRateError] = useState<string | null>(null)
 
   // Search / filter state (M2, M3)
   const [nodeSearch,  setNodeSearch]  = useState('')
@@ -304,10 +304,24 @@ function CloudInner() {
     const cpu = parseFloat(rateCpu); if (!isNaN(cpu) && cpu > 0) body.finops_cpu_per_core_hr = cpu
     const mem = parseFloat(rateMem); if (!isNaN(mem) && mem > 0) body.finops_mem_per_gib_hr = mem
     const sto = parseFloat(rateStore); if (!isNaN(sto) && sto > 0) body.finops_storage_per_gib_mo = sto
-    if (!Object.keys(body).length) return
-    await fetch('/api/settings/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    setRateSaved(true); setTimeout(() => setRateSaved(false), 2000)
-    refresh()
+    if (!Object.keys(body).length) {
+      setRateError('Enter at least one valid positive rate.')
+      return
+    }
+    setRateError(null)
+    setRateSaved(false)
+    try {
+      const response = await fetch('/api/settings/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const result = await response.json().catch(() => null)
+      if (!response.ok) {
+        setRateError(result?.error ?? `Rate save failed (HTTP ${response.status})`)
+        return
+      }
+      setRateSaved(true); setTimeout(() => setRateSaved(false), 2000)
+      refresh()
+    } catch (saveError) {
+      setRateError(saveError instanceof Error ? saveError.message : 'Rate save failed')
+    }
   }
 
   const { cost, storage, optimizations, cluster, nodes, totalPodCount } = data
@@ -323,22 +337,20 @@ function CloudInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ratesUsed?.cpuPerCoreHr, ratesUsed?.memPerGiBHr, ratesUsed?.storagePerGiBMo])
 
-  const totalSavings = optimizations.reduce((s, o) => s + o.savingsPotential, 0)
+  const totalSavings = data.dataQuality.usageComplete ? optimizations.reduce((s, o) => s + o.savingsPotential, 0) : 0
   // B2: use != null so 0% efficiency doesn't falsely zero the gauge
-  const efficiencyScore = cost.cpuEfficiency != null && cost.memEfficiency != null
-    ? Math.round((cost.cpuEfficiency + cost.memEfficiency) / 2) : (cost.cpuEfficiency ?? cost.memEfficiency ?? 0)
+  const efficiencyScore = cost.resourceEfficiency
   const critCount = optimizations.filter(o => o.severity === 'critical').length
 
   // ── Node cost enrichment ──────────────────────────────────────────────────
-  type NodeRowWithCost = NodeRow & { costPerMo: number; idleCostPerMo: number }
+  type NodeRowWithCost = NodeRow & { costPerMo: number; idleCostPerMo: number | null }
   const nodeWithCost = useMemo<NodeRowWithCost[]>(() => {
     const cpu$ = cost.ratesUsed.cpuPerCoreHr || 0.048
     const mem$ = cost.ratesUsed.memPerGiBHr  || 0.006
     return nodes.map(n => {
       const costPerMo    = Math.round((n.cpuCores * cpu$ + n.memGiB * mem$) * 730 * 100) / 100
-      const idleCpuCores = n.cpuCores * Math.max(0, 1 - n.cpuUsagePct / 100)
       const idleMemGiB   = n.memGiB   * Math.max(0, 1 - n.memUsagePct / 100)
-      const idleCostPerMo = Math.round((idleCpuCores * cpu$ + idleMemGiB * mem$) * 730 * 100) / 100
+      const idleCostPerMo = n.cpuUsagePct === null ? null : Math.round((n.cpuCores * Math.max(0, 1 - n.cpuUsagePct / 100) * cpu$ + idleMemGiB * mem$) * 730 * 100) / 100
       return { ...n, costPerMo, idleCostPerMo }
     })
   }, [nodes, cost.ratesUsed])
@@ -381,9 +393,10 @@ function CloudInner() {
   const maxNsCost = cost.byNamespace.reduce((m, n) => Math.max(m, n.costPerMo), 0.01)
   const maxWlCost = cost.byWorkload.reduce((m, w) => Math.max(m, w.costPerMo), 0.01)
   // Totals (M5)
-  const nsTotal   = cost.byNamespace.reduce((s, n) => ({ cost: s.cost + n.costPerMo, waste: s.waste + n.wastedPerMo, pods: s.pods + n.podCount, wl: s.wl + n.workloadCount }), { cost: 0, waste: 0, pods: 0, wl: 0 })
+  const nsTotal   = filteredNs.reduce((s, n) => ({ cost: s.cost + n.costPerMo, waste: s.waste === null || n.wastedPerMo === null ? null : s.waste + n.wastedPerMo, pods: s.pods + n.podCount, wl: s.wl + n.workloadCount }), { cost: 0, waste: 0 as number | null, pods: 0, wl: 0 })
   const wlTotal   = cost.byWorkload.reduce((s, w) => ({ cost: s.cost + w.costPerMo, pods: s.pods + w.podCount }), { cost: 0, pods: 0 })
-  const pvcTotal  = storage.pvcs.reduce((s, p) => ({ cap: s.cap + p.capacityGiB, used: s.used + p.usedGiB, cost: s.cost + p.costPerMo }), { cap: 0, used: 0, cost: 0 })
+  const boundFilteredPvcs = filteredPvcs.filter(pvc => pvc.status === 'Bound')
+  const pvcTotal  = boundFilteredPvcs.reduce((s, p) => ({ cap: s.cap + p.capacityGiB, used: s.used === null || p.usedGiB === null ? null : s.used + p.usedGiB, cost: s.cost + p.costPerMo }), { cap: 0, used: 0 as number | null, cost: 0 })
 
   return (
     <div className="flex flex-col h-full">
@@ -400,14 +413,14 @@ function CloudInner() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {cost.totalPerMo > 0 && (
+          {data.dataQuality.scanComplete && (
             <span className="flex items-center gap-1.5 text-xs px-2.5 py-1 bg-surface-800 border border-surface-700 rounded-xl text-white font-bold">
-              <DollarSign className="w-3 h-3 text-brand-400" /> {fmt$(cost.totalPerMo)}/mo
+              <DollarSign className="w-3 h-3 text-brand-400" /> Estimated request cost {fmt$(cost.totalPerMo)}/mo
             </span>
           )}
           {totalSavings > 0 && (
             <span className="flex items-center gap-1.5 text-xs px-2.5 py-1 bg-success/10 border border-success/20 rounded-xl text-success font-medium">
-              <TrendingDown className="w-3 h-3" /> {fmt$(totalSavings)} potential savings
+              <TrendingDown className="w-3 h-3" /> {fmt$(totalSavings)} estimated request-cost reduction
             </span>
           )}
           {critCount > 0 && (
@@ -424,6 +437,7 @@ function CloudInner() {
               <AlertTriangle className="w-3 h-3" /> {error}
             </span>
           )}
+          {!isLive && data.dataQuality.scanComplete && <span className="text-2xs text-warning">Showing last successful estimate</span>}
           <button onClick={() => setRateOpen(o => !o)} title="Configure cost rates"
             className={cn('w-8 h-8 flex items-center justify-center border rounded-xl transition-all',
               rateOpen ? 'bg-brand-500/20 border-brand-500/40 text-brand-400' : 'bg-surface-800 hover:bg-surface-700 border-surface-700 text-surface-400 hover:text-white')}>
@@ -462,6 +476,7 @@ function CloudInner() {
                 {rateSaved ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
                 {rateSaved ? 'Saved' : 'Apply rates'}
               </button>
+              {rateError && <p role="alert" className="text-2xs text-danger max-w-xs">{rateError}</p>}
               <p className="text-2xs text-surface-600 flex items-center gap-1 ml-auto">
                 <Info className="w-3 h-3 flex-shrink-0" />
                 Estimates based on resource <em>requests</em>, not actual cloud billing. Use your contract rates for accuracy.
@@ -494,19 +509,25 @@ function CloudInner() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <AnimatePresence mode="wait">
+        {data.dataQuality.scanComplete ? <AnimatePresence mode="wait">
           <motion.div key={tab} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="p-6 space-y-6">
+
+            {(!data.dataQuality.usageComplete || !data.dataQuality.storageUsageComplete || !data.dataQuality.nodeUsageComplete) && (
+              <div role="status" className="rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-xs text-warning">
+                Some Prometheus usage data is incomplete. Request-based costs remain available; affected waste, node idle-capacity, efficiency, and storage-utilization estimates are shown as unknown.
+              </div>
+            )}
 
             {/* ══ OVERVIEW ══════════════════════════════════════════════════ */}
             {tab === 'Overview' && (<>
               {/* KPI row */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
-                  { label: 'Total Monthly Cost', value: fmt$(cost.totalPerMo), sub: 'compute + storage', icon: DollarSign, clr: 'text-white', bg: 'bg-brand-500/10 border-brand-500/20' },
+                  { label: 'Estimated Request Cost / Month', value: fmt$(cost.totalPerMo), sub: 'requests + Bound PVC capacity · not provider billing', icon: DollarSign, clr: 'text-white', bg: 'bg-brand-500/10 border-brand-500/20' },
                   { label: 'Compute Cost', value: fmt$(cost.computePerMo), sub: 'CPU + memory requests', icon: Server, clr: 'text-white', bg: 'bg-surface-800 border-surface-700' },
-                  { label: 'Storage Cost', value: fmt$(cost.storagePerMo), sub: `${storage.totalPVCs} PVCs · ${storage.totalCapacityGiB.toFixed(0)} GiB`, icon: HardDrive, clr: 'text-white', bg: 'bg-surface-800 border-surface-700' },
-                  { label: 'Wasted / Month', value: fmt$(cost.wastedPerMo), sub: 'over-provisioned resources', icon: TrendingDown, clr: cost.wastedPerMo > 5 ? 'text-warning' : 'text-success', bg: cost.wastedPerMo > 5 ? 'bg-warning/5 border-warning/20' : 'bg-success/5 border-success/20' },
+                  { label: 'Estimated Storage Cost', value: fmt$(cost.storagePerMo), sub: `${storage.pvcs.filter(p => p.status === 'Bound').length} Bound PVCs · ${storage.totalCapacityGiB.toFixed(0)} GiB provisioned`, icon: HardDrive, clr: 'text-white', bg: 'bg-surface-800 border-surface-700' },
+                  { label: 'Estimated Request Waste', value: cost.wastedPerMo === null ? '—' : fmt$(cost.wastedPerMo), sub: cost.wastedPerMo === null ? 'usage metrics incomplete' : 'request-cost estimate, not billed savings', icon: TrendingDown, clr: cost.wastedPerMo === null ? 'text-surface-400' : cost.wastedPerMo > 5 ? 'text-warning' : 'text-success', bg: cost.wastedPerMo !== null && cost.wastedPerMo > 5 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700' },
                 ].map(k => (
                   <div key={k.label} className={cn('rounded-2xl border p-4', k.bg)}>
                     <div className="flex items-center justify-between mb-2">
@@ -527,12 +548,12 @@ function CloudInner() {
                     <Activity className="w-4 h-4 text-brand-400" /> Resource Efficiency
                   </p>
                   <div className="flex justify-around">
-                    <EffGauge value={cost.cpuEfficiency ?? 0} label="CPU" size={90} />
-                    <EffGauge value={cost.memEfficiency ?? 0} label="Memory" size={90} />
-                    <EffGauge value={efficiencyScore} label="Overall" size={90} />
+                    <EffGauge value={cost.cpuEfficiency} label="CPU" size={90} />
+                    <EffGauge value={cost.memEfficiency} label="Memory" size={90} />
+                    <EffGauge value={efficiencyScore} label="Cost-weighted" size={90} />
                   </div>
                   <p className="text-2xs text-surface-500 text-center mt-3">
-                    actual usage ÷ requested · higher = better
+                    CPU and memory request-cost weighted · higher = better
                   </p>
                 </div>
 
@@ -556,9 +577,9 @@ function CloudInner() {
                     return (
                       <div className="space-y-2.5">
                         {nodeRows.map(n => {
-                          const isHighCpu = n.cpuUsagePct >= 80
+                          const isHighCpu = n.cpuUsagePct !== null && n.cpuUsagePct >= 80
                           const isHighMem = n.memUsagePct >= 80
-                          const isUnderutilized = n.cpuUsagePct < 30 && n.memUsagePct < 30
+                          const isUnderutilized = n.cpuUsagePct !== null && n.cpuUsagePct < 30 && n.memUsagePct < 30
                           return (
                             <div key={n.name}>
                               <div className="flex items-center justify-between mb-1">
@@ -569,7 +590,7 @@ function CloudInner() {
                                   {(isHighCpu || isHighMem) && <span className="text-2xs px-1.5 py-0.5 rounded bg-danger/10 border border-danger/20 text-danger font-semibold flex-shrink-0">{isHighCpu && isHighMem ? 'CPU+Mem pressure' : isHighCpu ? 'CPU pressure' : 'Mem pressure'}</span>}
                                 </div>
                                 <div className="flex items-center gap-3 flex-shrink-0">
-                                  <span className="text-2xs text-surface-500 tabular-nums">{n.cpuCores}c · {n.memGiB}GiB</span>
+                                  <span className="text-2xs text-surface-500 tabular-nums">{n.cpuUsagePct === null ? 'CPU usage —' : `CPU ${n.cpuUsagePct}%`} · Mem {n.memGiB}GiB</span>
                                   <span className="text-xs font-bold text-emerald-400 tabular-nums">{fmt$(n.costPerMo)}/mo</span>
                                 </div>
                               </div>
@@ -635,7 +656,7 @@ function CloudInner() {
                       <TrendingDown className="w-4 h-4 text-success" /> Top Optimizations
                     </p>
                     {totalSavings > 0 && (
-                      <span className="text-xs font-bold text-success">{fmt$(totalSavings)}/mo potential</span>
+                      <span className="text-xs font-bold text-success">{fmt$(totalSavings)}/mo estimated request-cost reduction</span>
                     )}
                   </div>
                   <div className="space-y-3">
@@ -714,7 +735,7 @@ function CloudInner() {
                             <div className="flex-shrink-0 text-right">
                               {o.savingsPotential > 0 ? (<>
                                 <p className="text-sm font-bold text-success">{fmt$(o.savingsPotential)}</p>
-                                <p className="text-2xs text-surface-500">/mo savings</p>
+                                <p className="text-2xs text-surface-500">request-cost estimate /mo</p>
                               </>) : (
                                 <span className={cn('text-2xs px-1.5 py-0.5 rounded border font-bold uppercase',
                                   o.severity === 'critical' ? 'text-danger border-danger/30 bg-danger/5' : 'text-warning border-warning/30 bg-warning/5')}>
@@ -742,7 +763,7 @@ function CloudInner() {
                 <span className="text-2xs text-surface-400">CPU: ${cost.ratesUsed.cpuPerCoreHr}/core/hr</span>
                 <span className="text-2xs text-surface-400">Memory: ${cost.ratesUsed.memPerGiBHr}/GiB/hr</span>
                 <span className="text-2xs text-surface-400">Storage: ${cost.ratesUsed.storagePerGiBMo}/GiB/mo</span>
-                <span className="text-2xs text-surface-400">Based on Oracle Cloud ap-mumbai-1 rates · 730 hrs/mo</span>
+                    <span className="text-2xs text-surface-400">Rates used · 730 hours/mo · request-cost estimate, not provider billing</span>
               </div>
             </>)}
 
@@ -751,20 +772,28 @@ function CloudInner() {
               const cpu$ = cost.ratesUsed.cpuPerCoreHr || 0.048
               const mem$ = cost.ratesUsed.memPerGiBHr  || 0.006
               const totalNodeCost = nodeWithCost.reduce((s, n) => s + n.costPerMo, 0)
-              const totalIdleCost = nodeWithCost.reduce((s, n) => s + n.idleCostPerMo, 0)
-              const avgCpuUse     = nodes.length > 0 ? Math.round(nodes.reduce((s, n) => s + n.cpuUsagePct, 0) / nodes.length) : 0
-              const avgMemUse     = nodes.length > 0 ? Math.round(nodes.reduce((s, n) => s + n.memUsagePct, 0) / nodes.length) : 0
+              const totalIdleCost = nodeWithCost.every(n => n.idleCostPerMo !== null)
+                ? nodeWithCost.reduce((s, n) => s + (n.idleCostPerMo ?? 0), 0)
+                : null
+              const totalCpuCapacity = nodes.reduce((sum, node) => sum + node.cpuCores, 0)
+              const totalMemCapacity = nodes.reduce((sum, node) => sum + node.memGiB, 0)
+              const avgCpuUse = data.dataQuality.nodeUsageComplete && totalCpuCapacity > 0
+                ? Math.round(nodes.reduce((sum, node) => sum + node.cpuCores * (node.cpuUsagePct ?? 0), 0) / totalCpuCapacity) : null
+              const avgMemUse = totalMemCapacity > 0
+                ? Math.round(nodes.reduce((sum, node) => sum + node.memGiB * node.memUsagePct, 0) / totalMemCapacity) : 0
               const maxNodeCost   = nodeWithCost.reduce((m, n) => Math.max(m, n.costPerMo), 0.01)
               const filteredTotal = filteredNodes.reduce((s, n) => s + n.costPerMo, 0)
-              const filteredIdle  = filteredNodes.reduce((s, n) => s + n.idleCostPerMo, 0)
+              const filteredIdle  = filteredNodes.every(n => n.idleCostPerMo !== null)
+                ? filteredNodes.reduce((s, n) => s + (n.idleCostPerMo ?? 0), 0)
+                : null
               return (<>
                 {/* KPI row — infra + cost */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                   {[
                     { label: 'Total Nodes',       value: String(nodes.length),           sub: `${nodes.filter(n => n.status === 'ready').length} ready · ${nodes.filter(n => n.status !== 'ready').length} not ready`, icon: Server,       bg: 'bg-surface-800 border-surface-700',   clr: 'text-white' },
-                    { label: 'Node Compute Cost',  value: fmt$(totalNodeCost) + '/mo',    sub: 'allocatable CPU + mem capacity',                                                                                          icon: DollarSign,   bg: 'bg-brand-500/10 border-brand-500/20', clr: 'text-white' },
-                    { label: 'Idle Capacity Cost', value: fmt$(totalIdleCost) + '/mo',    sub: `${totalNodeCost > 0 ? Math.round(totalIdleCost / totalNodeCost * 100) : 0}% of node budget unused`,                      icon: TrendingDown,  bg: totalIdleCost > totalNodeCost * 0.4 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: totalIdleCost > totalNodeCost * 0.4 ? 'text-warning' : 'text-success' },
-                    { label: 'Avg Utilisation',    value: `${Math.round((avgCpuUse + avgMemUse) / 2)}%`, sub: `CPU ${avgCpuUse}% · Mem ${avgMemUse}%`,                                                                   icon: Activity,     bg: 'bg-surface-800 border-surface-700',   clr: 'text-white' },
+                    { label: 'Node Capacity Cost Estimate', value: fmt$(totalNodeCost) + '/mo', sub: 'allocatable CPU + memory capacity at configured rates', icon: DollarSign, bg: 'bg-brand-500/10 border-brand-500/20', clr: 'text-white' },
+                    { label: 'Idle Capacity Cost Estimate', value: totalIdleCost === null ? '—' : fmt$(totalIdleCost) + '/mo', sub: totalIdleCost === null ? `${data.dataQuality.missingCpuUsageNodes.length} nodes lack CPU usage metrics` : `${totalNodeCost > 0 ? Math.round(totalIdleCost / totalNodeCost * 100) : 0}% utilization-based proxy`, icon: TrendingDown, bg: totalIdleCost !== null && totalIdleCost > totalNodeCost * 0.4 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: totalIdleCost === null ? 'text-surface-400' : totalIdleCost > totalNodeCost * 0.4 ? 'text-warning' : 'text-success' },
+                    { label: 'Capacity-Weighted Utilisation', value: avgCpuUse === null ? '—' : `${Math.round((avgCpuUse + avgMemUse) / 2)}%`, sub: avgCpuUse === null ? `CPU usage unavailable · Mem ${avgMemUse}%` : `CPU ${avgCpuUse}% · Mem ${avgMemUse}%`, icon: Activity, bg: 'bg-surface-800 border-surface-700', clr: avgCpuUse === null ? 'text-surface-400' : 'text-white' },
                   ].map(k => (
                     <div key={k.label} className={cn('rounded-2xl border p-4', k.bg)}>
                       <div className="flex items-center justify-between mb-2">
@@ -788,8 +817,8 @@ function CloudInner() {
                     </div>
                     <div className="space-y-2.5">
                       {[...nodeWithCost].sort((a, b) => b.costPerMo - a.costPerMo).map(n => {
-                        const effPct = Math.round((n.cpuUsagePct + n.memUsagePct) / 2)
-                        const isUnderutilized = n.cpuUsagePct < 30 && n.memUsagePct < 30
+                        const effPct = n.cpuUsagePct === null ? null : Math.round((n.cpuUsagePct + n.memUsagePct) / 2)
+                        const isUnderutilized = n.cpuUsagePct !== null && n.cpuUsagePct < 30 && n.memUsagePct < 30
                         return (
                           <div key={n.name}>
                             <div className="flex items-center justify-between mb-1">
@@ -799,16 +828,20 @@ function CloudInner() {
                                 {isUnderutilized && <span className="text-2xs px-1.5 py-0.5 rounded bg-warning/10 border border-warning/20 text-warning font-semibold flex-shrink-0">underused</span>}
                               </div>
                               <div className="flex items-center gap-4 flex-shrink-0">
-                                <span className={cn('text-2xs tabular-nums', effPct >= 60 ? 'text-success' : effPct >= 35 ? 'text-warning' : 'text-danger')}>
-                                  {effPct}% util
+                                <span className={cn('text-2xs tabular-nums', effPct === null ? 'text-surface-500' : effPct >= 60 ? 'text-success' : effPct >= 35 ? 'text-warning' : 'text-danger')}>
+                                  {effPct === null ? 'utilization —' : `${effPct}% util`}
                                 </span>
-                                <span className="text-2xs text-warning tabular-nums">{fmt$(n.idleCostPerMo)}/mo idle</span>
+                                <span className="text-2xs text-warning tabular-nums">{n.idleCostPerMo === null ? 'idle cost —' : `${fmt$(n.idleCostPerMo)}/mo idle`}</span>
                                 <span className="text-xs font-bold text-emerald-400 tabular-nums w-16 text-right">{fmt$(n.costPerMo)}/mo</span>
                               </div>
                             </div>
                             <div className="h-2 rounded-full bg-surface-800 overflow-hidden flex">
-                              <div className="h-full bg-emerald-500/70 transition-all" style={{ width: `${(n.costPerMo - n.idleCostPerMo) / maxNodeCost * 100}%` }} />
-                              <div className="h-full bg-warning/40 transition-all" style={{ width: `${n.idleCostPerMo / maxNodeCost * 100}%` }} />
+                              {n.idleCostPerMo === null
+                                ? <div className="h-full bg-surface-500" style={{ width: `${n.costPerMo / maxNodeCost * 100}%` }} />
+                                : <>
+                                    <div className="h-full bg-emerald-500/70 transition-all" style={{ width: `${(n.costPerMo - n.idleCostPerMo) / maxNodeCost * 100}%` }} />
+                                    <div className="h-full bg-warning/40 transition-all" style={{ width: `${n.idleCostPerMo / maxNodeCost * 100}%` }} />
+                                  </>}
                             </div>
                           </div>
                         )
@@ -831,7 +864,7 @@ function CloudInner() {
                   </div>
                   <button onClick={() => exportCsv('nodes.csv',
                     ['Name','Status','CPU Cores','CPU Usage%','Mem GiB','Mem Usage%','Pods','Pod Capacity','Instance Type','OS','Arch','Uptime (h)','Cost/mo','Idle Cost/mo'],
-                    filteredNodes.map(n => [[n.name],[n.status],[n.cpuCores],[n.cpuUsagePct],[n.memGiB],[n.memUsagePct],[n.podCount],[n.podCapacity],[n.instanceType],[n.os],[n.arch],[n.uptimeHours],[n.costPerMo],[n.idleCostPerMo]]))}
+                    filteredNodes.map(n => [[n.name],[n.status],[n.cpuCores],[n.cpuUsagePct ?? ''],[n.memGiB],[n.memUsagePct],[n.podCount],[n.podCapacity],[n.instanceType],[n.os],[n.arch],[n.uptimeHours],[n.costPerMo],[n.idleCostPerMo ?? '']]))}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-xl text-xs text-surface-400 hover:text-white transition-all">
                     <Download className="w-3.5 h-3.5" /> CSV
                   </button>
@@ -858,11 +891,13 @@ function CloudInner() {
                       </thead>
                       <tbody className="divide-y divide-surface-800">
                         {filteredNodes.map(n => {
-                          const isHighCpu = n.cpuUsagePct >= 80
+                          const isHighCpu = n.cpuUsagePct !== null && n.cpuUsagePct >= 80
                           const isHighMem = n.memUsagePct >= 80
-                          const isUnderutilized = n.cpuUsagePct < 30 && n.memUsagePct < 30
+                          const isUnderutilized = n.cpuUsagePct !== null && n.cpuUsagePct < 30 && n.memUsagePct < 30
                           const podPct  = n.podCapacity > 0 ? Math.round(n.podCount / n.podCapacity * 100) : 0
-                          const idlePct = n.costPerMo > 0 ? Math.round(n.idleCostPerMo / n.costPerMo * 100) : 0
+                          const idlePct = n.costPerMo > 0 && n.idleCostPerMo !== null ? Math.round(n.idleCostPerMo / n.costPerMo * 100) : null
+                          const cpuUsageColor = n.cpuUsagePct === null ? 'bg-surface-500' : n.cpuUsagePct >= 80 ? 'bg-danger' : n.cpuUsagePct >= 60 ? 'bg-warning' : 'bg-success'
+                          const cpuTextColor = n.cpuUsagePct === null ? 'text-surface-500' : n.cpuUsagePct >= 80 ? 'text-danger' : n.cpuUsagePct >= 60 ? 'text-warning' : 'text-surface-400'
                           return (
                             <tr key={n.name} className="hover:bg-surface-800/40 transition-colors">
                               <td className="pl-5 pr-3 py-3 font-mono text-white max-w-[200px] truncate" title={n.name}>{n.name}</td>
@@ -881,11 +916,11 @@ function CloudInner() {
                               <td className="px-3 py-3 w-28">
                                 <div className="flex items-center gap-1.5">
                                   <div className="flex-1 h-1.5 rounded-full bg-surface-800">
-                                    <div className={cn('h-full rounded-full transition-all', n.cpuUsagePct >= 80 ? 'bg-danger' : n.cpuUsagePct >= 60 ? 'bg-warning' : 'bg-success')}
-                                      style={{ width: `${n.cpuUsagePct}%` }} />
+                                    <div className={cn('h-full rounded-full transition-all', cpuUsageColor)}
+                                      style={{ width: `${n.cpuUsagePct ?? 0}%` }} />
                                   </div>
-                                  <span className={cn('text-2xs tabular-nums w-8 text-right', n.cpuUsagePct >= 80 ? 'text-danger' : n.cpuUsagePct >= 60 ? 'text-warning' : 'text-surface-400')}>
-                                    {n.cpuUsagePct}%
+                                  <span className={cn('text-2xs tabular-nums w-8 text-right', cpuTextColor)}>
+                                    {n.cpuUsagePct === null ? '—' : `${n.cpuUsagePct}%`}
                                   </span>
                                 </div>
                               </td>
@@ -913,15 +948,19 @@ function CloudInner() {
                                 <div className="space-y-1">
                                   <p className="font-bold text-emerald-400 tabular-nums">{fmt$(n.costPerMo)}</p>
                                   <div className="w-20 h-1.5 rounded-full bg-surface-800 overflow-hidden flex">
-                                    <div className="h-full bg-emerald-500/70 transition-all" style={{ width: `${(n.costPerMo - n.idleCostPerMo) / maxNodeCost * 100}%` }} />
-                                    <div className="h-full bg-warning/40 transition-all" style={{ width: `${n.idleCostPerMo / maxNodeCost * 100}%` }} />
+                                    {n.idleCostPerMo === null
+                                      ? <div className="h-full bg-surface-500" style={{ width: `${n.costPerMo / maxNodeCost * 100}%` }} />
+                                      : <>
+                                          <div className="h-full bg-emerald-500/70 transition-all" style={{ width: `${(n.costPerMo - n.idleCostPerMo) / maxNodeCost * 100}%` }} />
+                                          <div className="h-full bg-warning/40 transition-all" style={{ width: `${n.idleCostPerMo / maxNodeCost * 100}%` }} />
+                                        </>}
                                   </div>
                                 </div>
                               </td>
                               <td className="px-3 py-3">
-                                <span className={cn('tabular-nums text-2xs', idlePct > 40 ? 'text-warning' : 'text-surface-500')}>
-                                  {fmt$(n.idleCostPerMo)}
-                                  {idlePct > 0 && <span className="ml-1 text-surface-600">({idlePct}%)</span>}
+                                <span className={cn('tabular-nums text-2xs', idlePct !== null && idlePct > 40 ? 'text-warning' : 'text-surface-500')}>
+                                  {n.idleCostPerMo === null ? 'unknown' : fmt$(n.idleCostPerMo)}
+                                  {idlePct !== null && idlePct > 0 && <span className="ml-1 text-surface-600">({idlePct}%)</span>}
                                 </span>
                               </td>
                             </tr>
@@ -940,8 +979,8 @@ function CloudInner() {
                             <td colSpan={8} />
                             <td className="px-3 py-2.5 font-bold text-emerald-400 tabular-nums">{fmt$(filteredTotal)}/mo</td>
                             <td className="px-3 py-2.5 tabular-nums">
-                              <span className={filteredIdle > filteredTotal * 0.3 ? 'text-warning font-bold' : 'text-surface-500'}>
-                                {fmt$(filteredIdle)}/mo
+                              <span className={filteredIdle !== null && filteredIdle > filteredTotal * 0.3 ? 'text-warning font-bold' : 'text-surface-500'}>
+                                {filteredIdle === null ? 'unknown' : `${fmt$(filteredIdle)}/mo`}
                               </span>
                             </td>
                           </tr>
@@ -956,21 +995,21 @@ function CloudInner() {
             {/* ══ NAMESPACES ════════════════════════════════════════════════ */}
             {tab === 'Namespaces' && (() => {
               const totalNsCost   = cost.byNamespace.reduce((s, n) => s + n.costPerMo, 0)
-              const totalNsWaste  = cost.byNamespace.reduce((s, n) => s + n.wastedPerMo, 0)
-              const avgCpuEff     = cost.byNamespace.filter(n => n.cpuEfficiency !== null).length > 0
-                ? Math.round(cost.byNamespace.filter(n => n.cpuEfficiency !== null).reduce((s, n) => s + (n.cpuEfficiency ?? 0), 0) / cost.byNamespace.filter(n => n.cpuEfficiency !== null).length) : null
-              const avgMemEff     = cost.byNamespace.filter(n => n.memEfficiency !== null).length > 0
-                ? Math.round(cost.byNamespace.filter(n => n.memEfficiency !== null).reduce((s, n) => s + (n.memEfficiency ?? 0), 0) / cost.byNamespace.filter(n => n.memEfficiency !== null).length) : null
+              const totalNsWaste  = cost.byNamespace.every(n => n.wastedPerMo !== null)
+                ? cost.byNamespace.reduce((s, n) => s + (n.wastedPerMo ?? 0), 0)
+                : null
+              const avgCpuEff     = cost.cpuEfficiency
+              const avgMemEff     = cost.memEfficiency
               const maxNsCostBar  = cost.byNamespace.reduce((m, n) => Math.max(m, n.costPerMo), 0.01)
-              const wastedPct     = totalNsCost > 0 ? Math.round(totalNsWaste / totalNsCost * 100) : 0
+              const wastedPct     = totalNsWaste !== null && totalNsCost > 0 ? Math.round(totalNsWaste / totalNsCost * 100) : null
               return (<>
               {/* KPI tiles */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
                   { label: 'Total Cost',        value: fmt$(totalNsCost) + '/mo',   sub: `${cost.byNamespace.length} namespaces`,                                       icon: DollarSign,  bg: 'bg-brand-500/10 border-brand-500/20',  clr: 'text-white' },
-                  { label: 'Wasted / Month',    value: fmt$(totalNsWaste) + '/mo',  sub: `${wastedPct}% of compute over-provisioned`,                                   icon: TrendingDown, bg: totalNsWaste > totalNsCost * 0.3 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: totalNsWaste > totalNsCost * 0.3 ? 'text-warning' : 'text-success' },
-                  { label: 'Avg CPU Efficiency', value: avgCpuEff !== null ? `${avgCpuEff}%` : '—', sub: 'actual ÷ requested across namespaces',                        icon: Cpu,         bg: avgCpuEff !== null && avgCpuEff < 40 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: avgCpuEff !== null ? effColor(avgCpuEff) : 'text-surface-400' },
-                  { label: 'Avg Mem Efficiency', value: avgMemEff !== null ? `${avgMemEff}%` : '—', sub: 'actual ÷ requested across namespaces',                        icon: MemoryStick, bg: avgMemEff !== null && avgMemEff < 40 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: avgMemEff !== null ? effColor(avgMemEff) : 'text-surface-400' },
+                  { label: 'Estimated Request Waste', value: totalNsWaste === null ? '—' : fmt$(totalNsWaste) + '/mo', sub: wastedPct === null ? 'usage metrics incomplete' : `${wastedPct}% of request cost`, icon: TrendingDown, bg: totalNsWaste !== null && totalNsWaste > totalNsCost * 0.3 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: totalNsWaste === null ? 'text-surface-400' : totalNsWaste > totalNsCost * 0.3 ? 'text-warning' : 'text-success' },
+                  { label: 'Cluster CPU Efficiency', value: avgCpuEff !== null ? `${avgCpuEff}%` : '—', sub: 'total CPU usage ÷ total requests', icon: Cpu, bg: avgCpuEff !== null && avgCpuEff < 40 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: avgCpuEff !== null ? effColor(avgCpuEff) : 'text-surface-400' },
+                  { label: 'Cluster Memory Efficiency', value: avgMemEff !== null ? `${avgMemEff}%` : '—', sub: 'total memory usage ÷ total requests', icon: MemoryStick, bg: avgMemEff !== null && avgMemEff < 40 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: avgMemEff !== null ? effColor(avgMemEff) : 'text-surface-400' },
                 ].map(k => (
                   <div key={k.label} className={cn('rounded-2xl border p-4', k.bg)}>
                     <div className="flex items-center justify-between mb-2">
@@ -990,7 +1029,7 @@ function CloudInner() {
                     <p className="text-xs font-semibold text-white flex items-center gap-2">
                       <BarChart3 className="w-4 h-4 text-brand-400" /> Cost vs Waste by Namespace
                     </p>
-                    <span className="text-xs font-bold text-white">{fmt$(totalNsCost)}/mo · <span className="text-warning">{fmt$(totalNsWaste)}/mo wasted</span></span>
+                    <span className="text-xs font-bold text-white">{fmt$(totalNsCost)}/mo · <span className="text-warning">{totalNsWaste === null ? 'usage unavailable' : `${fmt$(totalNsWaste)}/mo estimated waste`}</span></span>
                   </div>
                   <div className="space-y-2.5">
                     {[...cost.byNamespace].sort((a, b) => b.costPerMo - a.costPerMo).slice(0, 8).map(ns => (
@@ -1003,13 +1042,17 @@ function CloudInner() {
                             )}
                           </div>
                           <div className="flex items-center gap-3 flex-shrink-0">
-                            {ns.wastedPerMo > 0 && <span className="text-2xs text-warning tabular-nums">{fmt$(ns.wastedPerMo)} waste</span>}
+                            {ns.wastedPerMo === null ? <span className="text-2xs text-surface-500">usage unavailable</span> : ns.wastedPerMo > 0 && <span className="text-2xs text-warning tabular-nums">{fmt$(ns.wastedPerMo)} est.</span>}
                             <span className="text-xs font-bold text-white tabular-nums w-14 text-right">{fmt$(ns.costPerMo)}/mo</span>
                           </div>
                         </div>
                         <div className="h-2 rounded-full bg-surface-800 overflow-hidden flex">
-                          <div className="h-full bg-brand-500/70 transition-all" style={{ width: `${(ns.costPerMo - ns.wastedPerMo) / maxNsCostBar * 100}%` }} />
-                          <div className="h-full bg-warning/40 transition-all" style={{ width: `${ns.wastedPerMo / maxNsCostBar * 100}%` }} />
+                          {ns.wastedPerMo === null
+                            ? <div className="h-full bg-surface-600" style={{ width: `${ns.costPerMo / maxNsCostBar * 100}%` }} />
+                            : <>
+                                <div className="h-full bg-brand-500/70 transition-all" style={{ width: `${Math.max(0, ns.costPerMo - ns.wastedPerMo) / maxNsCostBar * 100}%` }} />
+                                <div className="h-full bg-warning/40 transition-all" style={{ width: `${ns.wastedPerMo / maxNsCostBar * 100}%` }} />
+                              </>}
                         </div>
                       </div>
                     ))}
@@ -1030,7 +1073,7 @@ function CloudInner() {
                 </div>
                 <button onClick={() => exportCsv('namespaces.csv',
                   ['Namespace','Workloads','Pods','CPU Eff%','Mem Eff%','CPU Req (c)','Mem Req (Gi)','Cost/mo','Waste/mo','Share%'],
-                  filteredNs.map(n => [[n.namespace],[n.workloadCount],[n.podCount],[n.cpuEfficiency ?? ''],[n.memEfficiency ?? ''],[n.cpuRequestedCores],[n.memRequestedGiB],[n.costPerMo],[n.wastedPerMo],[n.costSharePct]]))}
+                  filteredNs.map(n => [[n.namespace],[n.workloadCount],[n.podCount],[n.cpuEfficiency ?? ''],[n.memEfficiency ?? ''],[n.cpuRequestedCores],[n.memRequestedGiB],[n.costPerMo],[n.wastedPerMo ?? ''],[n.costSharePct]]))}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-xl text-xs text-surface-400 hover:text-white transition-all">
                   <Download className="w-3.5 h-3.5" /> CSV
                 </button>
@@ -1088,8 +1131,8 @@ function CloudInner() {
                           <td className="px-3 py-3 text-surface-300 tabular-nums">{ns.memRequestedGiB}Gi</td>
                           <td className="px-3 py-3 font-bold text-white tabular-nums">{fmt$(ns.costPerMo)}</td>
                           <td className="px-3 py-3 tabular-nums">
-                            <span className={ns.wastedPerMo > 1 ? 'text-warning' : 'text-surface-500'}>
-                              {ns.wastedPerMo > 0 ? fmt$(ns.wastedPerMo) : '—'}
+                            <span className={ns.wastedPerMo === null ? 'text-surface-500' : ns.wastedPerMo > 1 ? 'text-warning' : 'text-surface-500'}>
+                              {ns.wastedPerMo === null ? 'unknown' : ns.wastedPerMo > 0 ? fmt$(ns.wastedPerMo) : '—'}
                             </span>
                           </td>
                           <td className="px-3 py-3">
@@ -1105,7 +1148,7 @@ function CloudInner() {
                       ))}
                       {filteredNs.length === 0 && (
                         <tr><td colSpan={10} className="px-5 py-8 text-center text-surface-500 text-xs">
-                          {cost.byNamespace.length === 0 ? 'No namespace cost data. Pods may not have resource requests set.' : 'No namespaces match the filter.'}
+                          {cost.byNamespace.length === 0 ? 'No workload cost data returned. Check cluster pod data and resource requests.' : 'No namespaces match the filter.'}
                         </td></tr>
                       )}
                     </tbody>
@@ -1119,7 +1162,7 @@ function CloudInner() {
                           <td colSpan={5} />
                           <td className="px-3 py-2.5 font-bold text-white tabular-nums">{fmt$(nsTotal.cost)}</td>
                           <td className="px-3 py-2.5 font-bold tabular-nums">
-                            <span className={nsTotal.waste > 1 ? 'text-warning' : 'text-surface-500'}>{fmt$(nsTotal.waste)}</span>
+                            <span className={nsTotal.waste === null ? 'text-surface-500' : nsTotal.waste > 1 ? 'text-warning' : 'text-surface-500'}>{nsTotal.waste === null ? 'unknown' : fmt$(nsTotal.waste)}</span>
                           </td>
                           <td />
                         </tr>
@@ -1288,20 +1331,22 @@ function CloudInner() {
 
             {/* ══ STORAGE ═══════════════════════════════════════════════════ */}
             {tab === 'Storage' && (() => {
-              const usedPct       = storage.totalCapacityGiB > 0 ? Math.round(storage.totalUsedGiB / storage.totalCapacityGiB * 100) : 0
-              const freeCap       = storage.totalCapacityGiB - storage.totalUsedGiB
-              const freeCost      = storage.totalCapacityGiB > 0 ? storage.costPerMo * (freeCap / storage.totalCapacityGiB) : 0
-              const criticalPvcs  = storage.pvcs.filter(p => p.usagePct > 90).length
-              const warningPvcs   = storage.pvcs.filter(p => p.usagePct > 70 && p.usagePct <= 90).length
+              const usageKnown    = storage.usageComplete && storage.totalUsedGiB !== null
+              const usedPct       = usageKnown && storage.totalCapacityGiB > 0 ? Math.round(storage.totalUsedGiB! / storage.totalCapacityGiB * 100) : null
+              const freeCap       = usageKnown ? storage.totalCapacityGiB - storage.totalUsedGiB! : null
+              const freeCost      = freeCap !== null && storage.totalCapacityGiB > 0 ? storage.costPerMo * (freeCap / storage.totalCapacityGiB) : null
+              const unknownUsagePvcs = storage.pvcs.filter(p => p.status === 'Bound' && p.usagePct === null).length
+              const criticalPvcs  = storage.pvcs.filter(p => p.usagePct !== null && p.usagePct > 90).length
+              const warningPvcs   = storage.pvcs.filter(p => p.usagePct !== null && p.usagePct > 70 && p.usagePct <= 90).length
               const maxPvcCost    = storage.pvcs.reduce((m, p) => Math.max(m, p.costPerMo), 0.01)
               return (<>
               {/* KPI tiles */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {[
-                  { label: 'Storage Cost',    value: fmt$(storage.costPerMo) + '/mo',                sub: `${storage.totalPVCs} PVCs · ${storage.totalCapacityGiB.toFixed(0)} GiB total`,         icon: DollarSign,   bg: 'bg-brand-500/10 border-brand-500/20',  clr: 'text-white' },
-                  { label: 'Used Capacity',   value: `${storage.totalUsedGiB.toFixed(1)} GiB`,       sub: `${usedPct}% of ${storage.totalCapacityGiB.toFixed(0)} GiB · ${freeCap.toFixed(1)} GiB free`, icon: HardDrive, bg: usedPct > 80 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: usedPct > 80 ? 'text-warning' : 'text-white' },
-                  { label: 'Idle Capacity Cost', value: fmt$(freeCost) + '/mo',                      sub: `${100 - usedPct}% capacity unused`,                                                       icon: TrendingDown,  bg: freeCost > storage.costPerMo * 0.4 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: freeCost > storage.costPerMo * 0.4 ? 'text-warning' : 'text-success' },
-                  { label: 'Near-Full PVCs',  value: String(criticalPvcs + warningPvcs),             sub: `${criticalPvcs} critical (>90%) · ${warningPvcs} warning (>70%)`,                         icon: AlertTriangle, bg: criticalPvcs > 0 ? 'bg-danger/5 border-danger/20' : warningPvcs > 0 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: criticalPvcs > 0 ? 'text-danger' : warningPvcs > 0 ? 'text-warning' : 'text-surface-400' },
+                  { label: 'Estimated Storage Cost', value: fmt$(storage.costPerMo) + '/mo', sub: `${storage.pvcs.filter(p => p.status === 'Bound').length} Bound PVCs · ${storage.totalCapacityGiB.toFixed(0)} GiB provisioned`, icon: DollarSign, bg: 'bg-brand-500/10 border-brand-500/20', clr: 'text-white' },
+                  { label: 'Used Capacity', value: usedPct === null ? '—' : `${storage.totalUsedGiB!.toFixed(1)} GiB`, sub: usedPct === null ? `${unknownUsagePvcs} bound PVCs lack usage metrics` : `${usedPct}% of ${storage.totalCapacityGiB.toFixed(0)} GiB · ${freeCap!.toFixed(1)} GiB free`, icon: HardDrive, bg: usedPct !== null && usedPct > 80 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: usedPct === null ? 'text-surface-400' : usedPct > 80 ? 'text-warning' : 'text-white' },
+                  { label: 'Idle Capacity Cost', value: freeCost === null ? '—' : fmt$(freeCost) + '/mo', sub: usedPct === null ? 'usage metrics incomplete' : `${100 - usedPct}% capacity unused`, icon: TrendingDown, bg: freeCost !== null && freeCost > storage.costPerMo * 0.4 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: freeCost === null ? 'text-surface-400' : freeCost > storage.costPerMo * 0.4 ? 'text-warning' : 'text-success' },
+                  { label: 'Near-Full PVCs', value: storage.usageComplete ? String(criticalPvcs + warningPvcs) : '—', sub: storage.usageComplete ? `${criticalPvcs} critical (>90%) · ${warningPvcs} warning (>70%)` : `${unknownUsagePvcs} bound PVCs not measured`, icon: AlertTriangle, bg: criticalPvcs > 0 ? 'bg-danger/5 border-danger/20' : warningPvcs > 0 ? 'bg-warning/5 border-warning/20' : 'bg-surface-800 border-surface-700', clr: !storage.usageComplete ? 'text-surface-400' : criticalPvcs > 0 ? 'text-danger' : warningPvcs > 0 ? 'text-warning' : 'text-surface-400' },
                 ].map(k => (
                   <div key={k.label} className={cn('rounded-2xl border p-4', k.bg)}>
                     <div className="flex items-center justify-between mb-2">
@@ -1322,10 +1367,12 @@ function CloudInner() {
                     <p className="text-xs font-semibold text-white mb-4 flex items-center gap-2">
                       <HardDrive className="w-4 h-4 text-brand-400" /> Overall Capacity Utilisation
                     </p>
-                    <div className="space-y-3">
+                    {usedPct === null
+                      ? <p className="text-xs text-surface-500">Capacity usage is unavailable for {unknownUsagePvcs} bound PVCs; no idle-capacity estimate is shown.</p>
+                      : <div className="space-y-3">
                       <div className="flex items-center justify-between text-2xs mb-1">
-                        <span className="text-surface-400">Used: {storage.totalUsedGiB.toFixed(1)} GiB</span>
-                        <span className="text-surface-400">Free: {freeCap.toFixed(1)} GiB</span>
+                        <span className="text-surface-400">Used: {storage.totalUsedGiB!.toFixed(1)} GiB</span>
+                        <span className="text-surface-400">Free: {freeCap!.toFixed(1)} GiB</span>
                       </div>
                       <div className="h-4 rounded-full bg-surface-800 overflow-hidden flex">
                         <div className={cn('h-full transition-all', usedPct > 90 ? 'bg-danger' : usedPct > 70 ? 'bg-warning' : 'bg-success')}
@@ -1344,7 +1391,7 @@ function CloudInner() {
                           </div>
                         ))}
                       </div>
-                    </div>
+                    </div>}
                   </div>
 
                   {/* PVC cost bar chart */}
@@ -1362,16 +1409,16 @@ function CloudInner() {
                             <div className="flex items-center gap-2 min-w-0">
                               <span className="text-xs text-surface-300 font-mono truncate max-w-[150px]">{pvc.name}</span>
                               <span className="text-2xs text-surface-600 flex-shrink-0">{pvc.namespace}</span>
-                              {pvc.usagePct > 90 && <span className="text-2xs px-1 py-0.5 rounded bg-danger/10 text-danger border border-danger/20 flex-shrink-0">full</span>}
-                              {pvc.usagePct > 70 && pvc.usagePct <= 90 && <span className="text-2xs px-1 py-0.5 rounded bg-warning/10 text-warning border border-warning/20 flex-shrink-0">high</span>}
+                              {pvc.usagePct !== null && pvc.usagePct > 90 && <span className="text-2xs px-1 py-0.5 rounded bg-danger/10 text-danger border border-danger/20 flex-shrink-0">full</span>}
+                              {pvc.usagePct !== null && pvc.usagePct > 70 && pvc.usagePct <= 90 && <span className="text-2xs px-1 py-0.5 rounded bg-warning/10 text-warning border border-warning/20 flex-shrink-0">high</span>}
                             </div>
                             <div className="flex items-center gap-3 flex-shrink-0">
-                              {pvc.usagePct > 0 && <span className={cn('text-2xs tabular-nums', pvc.usagePct > 90 ? 'text-danger' : pvc.usagePct > 70 ? 'text-warning' : 'text-surface-500')}>{pvc.usagePct}%</span>}
+                              {pvc.status === 'Bound' && <span className={cn('text-2xs tabular-nums', pvc.usagePct === null ? 'text-surface-500' : pvc.usagePct > 90 ? 'text-danger' : pvc.usagePct > 70 ? 'text-warning' : 'text-surface-500')}>{pvc.usagePct === null ? 'usage unknown' : `${pvc.usagePct}%`}</span>}
                               <span className="text-xs font-bold text-white tabular-nums w-14 text-right">{fmt$(pvc.costPerMo)}/mo</span>
                             </div>
                           </div>
                           <div className="h-2 rounded-full bg-surface-800 overflow-hidden">
-                            <div className={cn('h-full rounded-full transition-all', pvc.usagePct > 90 ? 'bg-danger/70' : pvc.usagePct > 70 ? 'bg-warning/70' : 'bg-brand-500/60')}
+                            <div className={cn('h-full rounded-full transition-all', pvc.usagePct === null ? 'bg-surface-500' : pvc.usagePct > 90 ? 'bg-danger/70' : pvc.usagePct > 70 ? 'bg-warning/70' : 'bg-brand-500/60')}
                               style={{ width: `${(pvc.costPerMo / maxPvcCost) * 100}%` }} />
                           </div>
                         </div>
@@ -1389,8 +1436,8 @@ function CloudInner() {
                     className="w-full pl-8 pr-3 py-1.5 bg-surface-800 border border-surface-700 rounded-xl text-xs text-white outline-none focus:border-brand-500" />
                 </div>
                 <button onClick={() => exportCsv('pvcs.csv',
-                  ['Name','Namespace','Storage Class','Status','Capacity (Gi)','Used (Gi)','Usage%','Cost/mo'],
-                  filteredPvcs.map(p => [[p.name],[p.namespace],[p.storageClass],[p.status],[p.capacityGiB],[p.usedGiB],[p.usagePct],[p.costPerMo]]))}
+                    ['Name','Namespace','Storage Class','Status','Capacity/Request (Gi)','Used (Gi)','Usage%','Cost/mo'],
+                  filteredPvcs.map(p => [[p.name],[p.namespace],[p.storageClass],[p.status],[p.capacityGiB],[p.usedGiB ?? ''],[p.usagePct ?? ''],[p.status === 'Bound' ? p.costPerMo : 'not provisioned']]))}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-xl text-xs text-surface-400 hover:text-white transition-all">
                   <Download className="w-3.5 h-3.5" /> CSV
                 </button>
@@ -1410,7 +1457,7 @@ function CloudInner() {
                         <SortTh<PvcInfo> label="Namespace" k="namespace" current={pvcSort.key} dir={pvcSort.dir} onSort={pvcSort.toggle} />
                         <SortTh<PvcInfo> label="Class" k="storageClass" current={pvcSort.key} dir={pvcSort.dir} onSort={pvcSort.toggle} />
                         <th className="px-3 py-2 text-left text-2xs font-semibold text-surface-500 uppercase tracking-wider">Status</th>
-                        <SortTh<PvcInfo> label="Capacity" k="capacityGiB" current={pvcSort.key} dir={pvcSort.dir} onSort={pvcSort.toggle} />
+                        <SortTh<PvcInfo> label="Capacity / Request" k="capacityGiB" current={pvcSort.key} dir={pvcSort.dir} onSort={pvcSort.toggle} />
                         <SortTh<PvcInfo> label="Used" k="usedGiB" current={pvcSort.key} dir={pvcSort.dir} onSort={pvcSort.toggle} />
                         <SortTh<PvcInfo> label="Usage%" k="usagePct" current={pvcSort.key} dir={pvcSort.dir} onSort={pvcSort.toggle} />
                         <SortTh<PvcInfo> label="Cost/mo" k="costPerMo" current={pvcSort.key} dir={pvcSort.dir} onSort={pvcSort.toggle} />
@@ -1429,23 +1476,23 @@ function CloudInner() {
                             </span>
                           </td>
                           <td className="px-3 py-3 text-surface-300 tabular-nums">{pvc.capacityGiB.toFixed(1)} Gi</td>
-                          <td className="px-3 py-3 text-surface-300 tabular-nums">{pvc.usedGiB > 0 ? `${pvc.usedGiB.toFixed(2)} Gi` : '—'}</td>
+                          <td className="px-3 py-3 text-surface-300 tabular-nums">{pvc.usedGiB === null ? 'unknown' : pvc.usedGiB > 0 ? `${pvc.usedGiB.toFixed(2)} Gi` : '—'}</td>
                           <td className="px-3 py-3 w-36">
-                            {pvc.usagePct > 0 ? (
+                            {pvc.usagePct !== null ? (
                               <div className="flex items-center gap-2">
                                 <div className="flex-1 h-2 rounded-full bg-surface-800">
                                   <div className={cn('h-full rounded-full transition-all',
-                                    pvc.usagePct > 90 ? 'bg-danger' : pvc.usagePct > 70 ? 'bg-warning' : 'bg-success')}
-                                    style={{ width: `${pvc.usagePct}%` }} />
+                                    pvc.usagePct! > 90 ? 'bg-danger' : pvc.usagePct! > 70 ? 'bg-warning' : 'bg-success')}
+                                    style={{ width: `${pvc.usagePct!}%` }} />
                                 </div>
                                 <span className={cn('text-2xs tabular-nums flex-shrink-0',
-                                  pvc.usagePct > 90 ? 'text-danger' : pvc.usagePct > 70 ? 'text-warning' : 'text-surface-400')}>
+                                  pvc.usagePct! > 90 ? 'text-danger' : pvc.usagePct! > 70 ? 'text-warning' : 'text-surface-400')}>
                                   {pvc.usagePct}%
                                 </span>
                               </div>
-                            ) : <span className="text-surface-600">—</span>}
+                            ) : <span className="text-surface-600">{pvc.status === 'Bound' ? 'unknown' : '—'}</span>}
                           </td>
-                          <td className="px-3 py-3 font-bold text-white tabular-nums">{fmt$(pvc.costPerMo)}</td>
+                          <td className="px-3 py-3 font-bold text-white tabular-nums">{pvc.status === 'Bound' ? fmt$(pvc.costPerMo) : 'not provisioned'}</td>
                         </tr>
                       ))}
                       {filteredPvcs.length === 0 && (
@@ -1461,7 +1508,7 @@ function CloudInner() {
                           <td className="pl-5 pr-3 py-2.5 text-2xs font-bold text-surface-400 uppercase tracking-wider">Total</td>
                           <td colSpan={3} />
                           <td className="px-3 py-2.5 font-bold text-surface-300 tabular-nums">{pvcTotal.cap.toFixed(1)} Gi</td>
-                          <td className="px-3 py-2.5 font-bold text-surface-300 tabular-nums">{pvcTotal.used.toFixed(2)} Gi</td>
+                          <td className="px-3 py-2.5 font-bold text-surface-300 tabular-nums">{pvcTotal.used === null ? 'unknown' : `${pvcTotal.used.toFixed(2)} Gi`}</td>
                           <td />
                           <td className="px-3 py-2.5 font-bold text-white tabular-nums">{fmt$(pvcTotal.cost)}</td>
                         </tr>
@@ -1489,7 +1536,7 @@ function CloudInner() {
                         <span className={cn('ml-auto px-2 py-0.5 rounded-full text-2xs font-bold border', sty.badge)}>{items.length}</span>
                       </div>
                       <p className="text-xl font-bold text-white tabular-nums">{items.length}</p>
-                      {savings > 0 && <p className="text-xs text-success mt-0.5">{fmt$(savings)}/mo savings</p>}
+                      {savings > 0 && <p className="text-xs text-success mt-0.5">{fmt$(savings)}/mo estimated request-cost reduction</p>}
                     </div>
                   )
                 })}
@@ -1511,9 +1558,17 @@ function CloudInner() {
               <div className="space-y-3">
                 {filteredOpts.length === 0 && optimizations.length === 0 && (
                   <div className="rounded-2xl bg-surface-900 border border-surface-800 p-8 text-center">
-                    <CheckCircle2 className="w-10 h-10 text-success mx-auto mb-3" />
-                    <p className="text-sm font-medium text-white">No optimizations needed</p>
-                    <p className="text-xs text-surface-500 mt-1">Your cluster is efficiently provisioned</p>
+                    {!data.dataQuality.usageComplete || !data.dataQuality.storageUsageComplete
+                      ? <>
+                          <Activity className="w-10 h-10 text-surface-500 mx-auto mb-3" />
+                          <p className="text-sm font-medium text-white">Optimization assessment incomplete</p>
+                          <p className="text-xs text-surface-500 mt-1">Usage metrics are missing; no conclusion about efficiency can be made.</p>
+                        </>
+                      : <>
+                          <CheckCircle2 className="w-10 h-10 text-success mx-auto mb-3" />
+                          <p className="text-sm font-medium text-white">No optimization findings in measured data</p>
+                          <p className="text-xs text-surface-500 mt-1">This estimate covers configured request and storage rates, not provider billing.</p>
+                        </>}
                   </div>
                 )}
                 {filteredOpts.length === 0 && optimizations.length > 0 && (
@@ -1575,7 +1630,7 @@ function CloudInner() {
                             {o.savingsPotential > 0 && (
                               <div className="flex-shrink-0 text-right">
                                 <p className="text-sm font-bold text-success">{fmt$(o.savingsPotential)}</p>
-                                <p className="text-2xs text-surface-500">/mo savings</p>
+                                <p className="text-2xs text-surface-500">request-cost estimate /mo</p>
                                 {o.currentCost > 0 && (
                                   <p className="text-2xs text-surface-600 mt-0.5">
                                     {Math.round(o.savingsPotential / o.currentCost * 100)}% of {fmt$(o.currentCost)}
@@ -1593,7 +1648,7 @@ function CloudInner() {
                                   <div className="flex items-center gap-1.5 text-2xs text-surface-500">
                                     <Cpu className="w-3 h-3" /><span className="font-medium">CPU</span>
                                     {o.cpuSavings !== undefined && o.cpuSavings > 0 && (
-                                      <span className="ml-auto text-success">{fmt$(o.cpuSavings)}/mo</span>
+                                      <span className="ml-auto text-success">{fmt$(o.cpuSavings)}/mo est.</span>
                                     )}
                                   </div>
                                   <div className="flex items-center gap-1.5 text-2xs">
@@ -1620,7 +1675,7 @@ function CloudInner() {
                                   <div className="flex items-center gap-1.5 text-2xs text-surface-500">
                                     <MemoryStick className="w-3 h-3" /><span className="font-medium">Memory</span>
                                     {o.memSavings !== undefined && o.memSavings > 0 && (
-                                      <span className="ml-auto text-success">{fmt$(o.memSavings)}/mo</span>
+                                      <span className="ml-auto text-success">{fmt$(o.memSavings)}/mo est.</span>
                                     )}
                                   </div>
                                   <div className="flex items-center gap-1.5 text-2xs">
@@ -1752,7 +1807,17 @@ function CloudInner() {
             </>)}
 
           </motion.div>
-        </AnimatePresence>
+        </AnimatePresence> : (
+          <div className="m-6 rounded-xl border border-warning/30 bg-warning/5 p-6 text-center">
+            <WifiOff className="mx-auto mb-3 h-8 w-8 text-warning" />
+            <p className="text-sm font-semibold text-white">FinOps scan unavailable</p>
+            <p className="mt-1 text-xs text-surface-400">No cost or optimization estimates are shown until all required cluster data sources respond successfully.</p>
+            {error && <p className="mt-3 text-xs text-warning">{error}</p>}
+            <button type="button" onClick={refresh} disabled={loading} className="mt-4 inline-flex items-center gap-2 rounded-lg border border-surface-700 bg-surface-800 px-3 py-2 text-xs text-surface-200 hover:bg-surface-700 disabled:opacity-50">
+              <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} /> Retry scan
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
