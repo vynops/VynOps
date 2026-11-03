@@ -22,7 +22,7 @@ import type { K8sPod, K8sNode, K8sDeployment, K8sStatefulSet, K8sDaemonSet, K8sC
   ResourceQuota, K8sContainer, K8sRole, K8sRoleBinding, K8sIngress, K8sNetworkPolicy, K8sContainerMetrics, K8sCluster,
   K8sHPA, K8sJob, K8sCronJob, K8sPDB, K8sPriorityClass, TlsCert } from '@/types'
 
-const TABS = ['Clusters', 'Pods', 'Workloads', 'Services', 'Policy', 'RBAC'] as const
+const TABS = ['Clusters', 'Pods', 'Workloads', 'Services', 'Namespaces', 'Policy', 'RBAC'] as const
 
 function fmtCpu(cores: number | null | undefined): string {
   if (cores == null) return '—'
@@ -659,7 +659,7 @@ function KubernetesInner() {
   const [svcSortDir, setSvcSortDir]         = useState<'asc'|'desc'>('asc')
   const [certSearch, setCertSearch]         = useState('')
   const [certSortDir, setCertSortDir]       = useState<'asc'|'desc'>('asc')
-  const [policySearch, setPolicySearch]     = useState('')
+  const [namespaceSearch, setNamespaceSearch] = useState('')
   const [netpolSearch, setNetpolSearch]     = useState('')
   const [netpolNsFilter, setNetpolNsFilter] = useState<string | null>(null)
   const [expandedNetpol, setExpandedNetpol] = useState<string | null>(null)
@@ -1461,6 +1461,7 @@ function KubernetesInner() {
     Pods: podsLive,
     Workloads: workloadsLive,
     Services: networkLive,
+    Namespaces: quotasLive,
     Policy: quotasLive,
     RBAC: securityLive,
   }
@@ -4414,7 +4415,11 @@ function KubernetesInner() {
               </div>
               )
             })()}
+          </div>
+        )}
 
+        {tab === 'Namespaces' && (
+          <div className="space-y-4">
             <div className="rounded-2xl bg-surface-900 border border-surface-800 overflow-hidden">
               <div className="px-4 py-3 border-b border-surface-800 flex items-center gap-2">
                 <Server className="w-4 h-4 text-brand-400" />
@@ -4427,7 +4432,7 @@ function KubernetesInner() {
                 </span>
                 <div className="ml-auto relative w-48">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-surface-500 pointer-events-none" />
-                  <input value={policySearch} onChange={e => setPolicySearch(e.target.value)} placeholder="Search namespaces…"
+                  <input value={namespaceSearch} onChange={e => setNamespaceSearch(e.target.value)} placeholder="Search namespaces…"
                     className="w-full bg-surface-800 border border-surface-700 rounded-lg pl-8 pr-3 py-1.5 text-2xs text-white placeholder-surface-500 focus:outline-none focus:border-brand-500" />
                 </div>
                 <button onClick={() => exportCSV(quotasData.namespaces.map((n: K8sNamespace) => ({ name: n.name, status: n.status, psa: n.labels?.['pod-security.kubernetes.io/enforce'] ?? '', age: n.createdAt })), 'namespaces.csv')}
@@ -4446,7 +4451,7 @@ function KubernetesInner() {
                 </thead>
                 <tbody>
                   {quotasData.namespaces
-                    .filter((ns: K8sNamespace) => !policySearch || ns.name.toLowerCase().includes(policySearch.toLowerCase()))
+                    .filter((ns: K8sNamespace) => !namespaceSearch || ns.name.toLowerCase().includes(namespaceSearch.toLowerCase()))
                     .map((ns: K8sNamespace) => {
                       const nsKey = ns.name
                       const isExpNs = expandedNs === nsKey
@@ -4662,6 +4667,11 @@ function KubernetesInner() {
               </table>
               </div>
             </div>
+          </div>
+        )}
+
+        {tab === 'Policy' && (
+          <div className="space-y-4">
             <div className="rounded-2xl bg-surface-900 border border-surface-800 overflow-hidden">
                 <div className="px-4 py-3 border-b border-surface-800 flex items-center gap-2">
                   <Server className="w-4 h-4 text-brand-400" />

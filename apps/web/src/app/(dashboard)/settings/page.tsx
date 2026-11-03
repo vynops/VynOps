@@ -2357,9 +2357,9 @@ function ProfileTab() {
           <div key={f.key}>
             <label className="text-2xs font-medium text-surface-500 uppercase tracking-wider block mb-1.5">{f.label}</label>
             <input type="text" value={form[f.key as keyof typeof form]} placeholder={f.placeholder}
-              readOnly
+              readOnly={role !== 'admin' || f.key !== 'platform_name'}
               onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))}
-              className="w-full bg-surface-900 border border-surface-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none transition-all opacity-60 cursor-not-allowed" />
+              className={cn('w-full bg-surface-900 border border-surface-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none transition-all', role === 'admin' && f.key === 'platform_name' ? 'focus:border-brand-500' : 'opacity-60 cursor-not-allowed')} />
           </div>
         ))}
         <div className="flex items-center gap-3 p-3 rounded-xl bg-surface-950 border border-surface-800">
