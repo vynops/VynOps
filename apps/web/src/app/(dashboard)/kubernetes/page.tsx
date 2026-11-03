@@ -497,6 +497,11 @@ function ClusterCliModal({ cluster, context, onContextChange, onClose }: {
 function KubernetesInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const [workloadDeepLinkKind, workloadDeepLinkName] = (searchParams.get('workload') ?? '').split('/')
+  const workloadDeepLinkNamespace = searchParams.get('ns')
+  const workloadDeepLinkKey = workloadDeepLinkNamespace && workloadDeepLinkName
+    ? `${workloadDeepLinkNamespace}/${workloadDeepLinkName}`
+    : null
   const [tab, setTab] = useState<Tab>(() => {
     const t = searchParams.get('tab')
     return (TABS as readonly string[]).includes(t ?? '') ? t as Tab : 'Pods'
@@ -505,7 +510,7 @@ function KubernetesInner() {
   const [expandedPod, setExpandedPod] = useState<string | null>(() => searchParams.get('pod') ?? null)
   const [nsFilter, setNsFilter] = useState<string | null>(() => searchParams.get('ns') ?? null)
   const [selectedContainer, setSelectedContainer] = useState<{ container: K8sContainer; pod: string; namespace: string } | null>(null)
-  const [expandedDeploy, setExpandedDeploy] = useState<string | null>(null)
+  const [expandedDeploy, setExpandedDeploy] = useState<string | null>(() => workloadDeepLinkKind === 'Deployment' ? workloadDeepLinkKey : null)
   const [logTarget, setLogTarget] = useState<{ pod: string; namespace: string; container?: string } | null>(null)
   const [describeTarget, setDescribeTarget] = useState<{ kind: string; namespace: string; name: string } | null>(null)
   const [yamlTarget, setYamlTarget] = useState<{ kind: string; namespace: string; name: string } | null>(null)
@@ -621,11 +626,11 @@ function KubernetesInner() {
   const [deployHistory, setDeployHistory] = useState<Record<string, any[]>>({})
   const [loadingHistory, setLoadingHistory] = useState<string | null>(null)
   const [rollingBack, setRollingBack] = useState<string | null>(null)
-  const [expandedSTS, setExpandedSTS] = useState<string | null>(null)
+  const [expandedSTS, setExpandedSTS] = useState<string | null>(() => workloadDeepLinkKind === 'StatefulSet' ? workloadDeepLinkKey : null)
   const [scaleStsTarget, setScaleStsTarget] = useState<K8sStatefulSet | null>(null)
   const [restartingSts, setRestartingSts] = useState<string | null>(null)
-  const [wSearch, setWSearch]             = useState('')
-  const [wNsFilter, setWNsFilter]         = useState<string | null>(null)
+  const [wSearch, setWSearch]             = useState(() => workloadDeepLinkKey ? workloadDeepLinkName : '')
+  const [wNsFilter, setWNsFilter]         = useState<string | null>(() => searchParams.get('ns') ?? null)
   const [wSortCol, setWSortCol]           = useState<'name'|'namespace'|'ready'|'status'|'age'>('name')
   const [wSortDir, setWSortDir]           = useState<'asc'|'desc'>('asc')
   const [wStatusFilter, setWStatusFilter] = useState<'Healthy'|'Degraded'|'Rolling'|null>(null)
@@ -637,7 +642,7 @@ function KubernetesInner() {
   const [deletingSTS, setDeletingSTS]     = useState<string | null>(null)
   const [deletingDS, setDeletingDS]       = useState<string | null>(null)
   const [opToast, setOpToast]             = useState<{ message: string; ok: boolean } | null>(null)
-  const [expandedDS, setExpandedDS]       = useState<string | null>(null)
+  const [expandedDS, setExpandedDS]       = useState<string | null>(() => workloadDeepLinkKind === 'DaemonSet' ? workloadDeepLinkKey : null)
   const [expandedCron, setExpandedCron]   = useState<string | null>(null)
   const [wloadEvents, setWloadEvents]     = useState<Record<string, any[]>>({})
   const [loadingWEvents, setLoadingWEvents] = useState<string | null>(null)
@@ -651,9 +656,9 @@ function KubernetesInner() {
   const [expandedIng, setExpandedIng]     = useState<string | null>(null)
   const [ingMetrics, setIngMetrics]       = useState<Record<string, any>>({})
   const [loadingIngMetrics, setLoadingIngMetrics] = useState<string | null>(null)
-  const [svcSearch, setSvcSearch]           = useState('')
+  const [svcSearch, setSvcSearch]           = useState(() => searchParams.get('service') ?? '')
   const [svcTypeFilter, setSvcTypeFilter]   = useState<string | null>(null)
-  const [svcNsFilter, setSvcNsFilter]       = useState<string | null>(null)
+  const [svcNsFilter, setSvcNsFilter]       = useState<string | null>(() => searchParams.get('ns') ?? null)
   const [ingSearch, setIngSearch]           = useState('')
   const [svcSortCol, setSvcSortCol]         = useState<'name'|'namespace'|'type'|'endpoints'|'age'>('name')
   const [svcSortDir, setSvcSortDir]         = useState<'asc'|'desc'>('asc')
@@ -692,9 +697,9 @@ function KubernetesInner() {
   // Resolve name-only expandedPod (from ?pod= URL param) to namespace/name once pods load
   useEffect(() => {
     if (!expandedPod || expandedPod.includes('/')) return
-    const match = (podsData.pods as K8sPod[]).find(p => p.name === expandedPod)
+    const match = (podsData.pods as K8sPod[]).find(p => p.name === expandedPod && (!nsFilter || p.namespace === nsFilter))
     if (match) setExpandedPod(`${match.namespace}/${match.name}`)
-  }, [podsData.pods, expandedPod])
+  }, [podsData.pods, expandedPod, nsFilter])
 
   const { data: nodesData, isLive: nodesLive, refresh: refreshNodes } = useLiveData(
     '/api/k8s/nodes',
@@ -717,9 +722,9 @@ function KubernetesInner() {
   // Resolve name-only expandedSvc (from ?service= URL param) to namespace/name once services load
   useEffect(() => {
     if (!expandedSvc || expandedSvc.includes('/')) return
-    const match = (networkData.services as K8sService[]).find(s => s.name === expandedSvc)
+    const match = (networkData.services as K8sService[]).find(s => s.name === expandedSvc && (!svcNsFilter || s.namespace === svcNsFilter))
     if (match) setExpandedSvc(`${match.namespace}/${match.name}`)
-  }, [networkData.services, expandedSvc])
+  }, [networkData.services, expandedSvc, svcNsFilter])
 
   const { data: ingressData } = useLiveData(
     '/api/k8s/ingress',
@@ -1192,6 +1197,45 @@ function KubernetesInner() {
       return svcSortDir === 'asc' ? cmp : -cmp
     })
   }, [networkData.services, svcSearch, svcTypeFilter, svcNsFilter, svcSortCol, svcSortDir])
+
+  const navigateToKubernetesTab = (nextTab: Tab, params: Record<string, string>) => {
+    setTab(nextTab)
+    router.replace(`?${new URLSearchParams({ tab: nextTab, ...params }).toString()}`, { scroll: false })
+  }
+
+  const openNamespacePods = (namespace: string, podName?: string) => {
+    setSearch(podName ?? '')
+    setNsFilter(namespace)
+    setStatusFilter(null)
+    setNodeFilter(null)
+    setExpandedPod(podName ? `${namespace}/${podName}` : null)
+    navigateToKubernetesTab('Pods', { ns: namespace, ...(podName ? { pod: podName } : {}) })
+  }
+
+  const openNamespaceWorkloads = (namespace: string, kind?: string, workloadName?: string) => {
+    const key = kind && workloadName ? `${namespace}/${workloadName}` : null
+    setWNsFilter(namespace)
+    setWSearch(workloadName ?? '')
+    setWStatusFilter(null)
+    setExpandedDeploy(kind === 'Deployment' ? key : null)
+    setExpandedSTS(kind === 'StatefulSet' ? key : null)
+    setExpandedDS(kind === 'DaemonSet' ? key : null)
+    navigateToKubernetesTab('Workloads', {
+      ns: namespace,
+      ...(kind && workloadName ? { workload: `${kind}/${workloadName}` } : {}),
+    })
+  }
+
+  const openNamespaceServices = (namespace: string, serviceName?: string) => {
+    setSvcNsFilter(namespace)
+    setSvcSearch(serviceName ?? '')
+    setSvcTypeFilter(null)
+    setExpandedSvc(serviceName ? `${namespace}/${serviceName}` : null)
+    navigateToKubernetesTab('Services', {
+      ns: namespace,
+      ...(serviceName ? { service: serviceName } : {}),
+    })
+  }
 
   const filteredIngresses = useMemo(() => {
     if (!ingSearch) return ingressData.ingresses as K8sIngress[]
@@ -4607,7 +4651,8 @@ function KubernetesInner() {
                                   {/* Pods */}
                                   <div>
                                     <p className="text-2xs font-semibold text-surface-400 uppercase tracking-wider mb-2">
-                                      Pods {nsPods.length > 0 && <span className="normal-case font-normal text-surface-500">({sum.podRunning}/{sum.podTotal} running)</span>}
+                                      <button type="button" onClick={() => openNamespacePods(nsKey)} className="hover:text-brand-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 rounded">Pods</button>
+                                      {nsPods.length > 0 && <span className="normal-case font-normal text-surface-500"> ({sum.podRunning}/{sum.podTotal} running)</span>}
                                     </p>
                                     {nsPods.length === 0
                                       ? <span className="text-surface-600 text-2xs">no pods</span>
@@ -4617,7 +4662,7 @@ function KubernetesInner() {
                                               <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0',
                                                 pod.status === 'Running' ? 'bg-success' : pod.status === 'Pending' ? 'bg-warning animate-pulse' : 'bg-danger'
                                               )} />
-                                              <span className="font-mono text-2xs text-surface-300 truncate max-w-[160px]">{pod.name}</span>
+                                              <button type="button" onClick={() => openNamespacePods(nsKey, pod.name)} className="font-mono text-2xs text-surface-300 text-left truncate max-w-[160px] hover:text-brand-300 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 rounded" title={`Open ${nsKey}/${pod.name} in Pods`}>{pod.name}</button>
                                               {pod.status !== 'Running' && <span className="text-2xs text-warning flex-shrink-0">{pod.status}</span>}
                                               <button
                                                 onClick={e => { e.stopPropagation(); setLogTarget({ pod: pod.name, namespace: nsKey }) }}
@@ -4627,7 +4672,7 @@ function KubernetesInner() {
                                               </button>
                                             </div>
                                           ))}
-                                          {nsPods.length > 9 && <div className="text-2xs text-surface-600 mt-1">+{nsPods.length - 9} more</div>}
+                                          {nsPods.length > 9 && <button type="button" onClick={() => openNamespacePods(nsKey)} className="text-2xs text-surface-600 mt-1 hover:text-brand-300 hover:underline">+{nsPods.length - 9} more</button>}
                                         </div>
                                     }
                                   </div>
@@ -4640,7 +4685,7 @@ function KubernetesInner() {
                                           {nsWorkloads.map((w, wi) => (
                                             <div key={wi} className="flex items-center gap-2">
                                               <span className="text-2xs text-surface-600 w-20 flex-shrink-0">{w.kind.replace('Deployment', 'Deploy').replace('StatefulSet', 'STS').replace('DaemonSet', 'DS')}</span>
-                                              <span className="font-mono text-2xs text-surface-300 truncate">{w.name}</span>
+                                              <button type="button" onClick={() => openNamespaceWorkloads(nsKey, w.kind, w.name)} className="font-mono text-2xs text-surface-300 text-left truncate hover:text-brand-300 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 rounded" title={`Open ${w.kind} ${nsKey}/${w.name} in Workloads`}>{w.name}</button>
                                               <span className="text-2xs text-surface-500 ml-auto tabular-nums flex-shrink-0">{w.ready}</span>
                                             </div>
                                           ))}
@@ -4648,11 +4693,11 @@ function KubernetesInner() {
                                           {nsSvcs.slice(0, 6).map((svc: K8sService) => (
                                             <div key={svc.name} className="flex items-center gap-2">
                                               <span className="text-2xs text-surface-600 w-20 flex-shrink-0">Service</span>
-                                              <span className="font-mono text-2xs text-surface-300 truncate">{svc.name}</span>
+                                              <button type="button" onClick={() => openNamespaceServices(nsKey, svc.name)} className="font-mono text-2xs text-surface-300 text-left truncate hover:text-brand-300 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-400 rounded" title={`Open Service ${nsKey}/${svc.name} in Services`}>{svc.name}</button>
                                               <span className="text-2xs text-surface-500 ml-auto flex-shrink-0">{svc.type}</span>
                                             </div>
                                           ))}
-                                          {nsSvcs.length > 6 && <div className="text-2xs text-surface-600">+{nsSvcs.length - 6} more</div>}
+                                          {nsSvcs.length > 6 && <button type="button" onClick={() => openNamespaceServices(nsKey)} className="text-2xs text-surface-600 hover:text-brand-300 hover:underline">+{nsSvcs.length - 6} more</button>}
                                         </div>
                                     }
                                   </div>
