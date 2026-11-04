@@ -2,9 +2,10 @@ import { NextResponse } from 'next/server'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import bcrypt from 'bcryptjs'
-import { assertAdmin, assertOperator, assertSession, getSessionUserId } from '@/lib/rbac'
+import { assertAdmin, assertOperator, assertSession, assertSuperAdmin, getSessionUserId } from '@/lib/rbac'
 import { appendAuditLog } from '@/app/api/settings/config/shared'
 import { auth } from '@/lib/auth'
+import { isConfiguredSuperAdmin, isDesignatedSuperAdmin } from '@/lib/super-admin'
 
 const DATA_DIR       = join(process.cwd(), 'data')
 const USERS_FILE     = join(DATA_DIR, 'users.json')
@@ -18,13 +19,21 @@ type StoredUser = {
   team: string
   avatar: string
   createdAt: string
+  status?: 'active' | 'blocked'
+  sessionVersion?: number
+  isSuperAdmin?: boolean
 }
 
 function readUsers(): StoredUser[] {
   try {
     if (!existsSync(USERS_FILE)) return []
     const parsed = JSON.parse(readFileSync(USERS_FILE, 'utf8'))
-    return Array.isArray(parsed) ? parsed : []
+    return Array.isArray(parsed) ? parsed.map((user: StoredUser) => ({
+      ...user,
+      status: user.status === 'blocked' ? 'blocked' : 'active',
+      sessionVersion: Number.isInteger(user.sessionVersion) ? user.sessionVersion : 0,
+      isSuperAdmin: user.isSuperAdmin === true,
+    })) : []
   } catch { return [] }
 }
 
@@ -53,7 +62,12 @@ function makeAvatar(name: string): string {
 export async function GET() {
   const deny = await assertSession()
   if (deny) return deny
-  return NextResponse.json(readUsers())
+  const users = readUsers()
+  return NextResponse.json(users.map(user => ({
+    ...user,
+    isSuperAdmin: isConfiguredSuperAdmin(users, user.id),
+    isDesignatedSuperAdmin: isDesignatedSuperAdmin(users, user.id),
+  })))
 }
 
 // ?? POST ? create user (admin only) ??????????????????????????????????????
@@ -68,6 +82,9 @@ export async function POST(req: Request) {
 
   if (!name?.trim() || !email?.trim() || !password?.trim()) {
     return NextResponse.json({ error: 'name, email, and password are required' }, { status: 400 })
+  }
+  if (password.length < 8) {
+    return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 })
   }
 
   const users = readUsers()
@@ -84,6 +101,9 @@ export async function POST(req: Request) {
     team:      team?.trim() ?? '',
     avatar:    makeAvatar(name),
     createdAt: new Date().toISOString(),
+    status:    'active',
+    sessionVersion: 0,
+    isSuperAdmin: false,
   }
 
   const hash = await bcrypt.hash(password, 12)
@@ -97,7 +117,7 @@ export async function POST(req: Request) {
   const session = await auth()
   appendAuditLog({ ts: new Date().toISOString(), user: (session?.user as any)?.email ?? 'unknown', action: 'user.create', detail: `created user ${newUser.email} (${newUser.role})` })
 
-  return NextResponse.json(newUser, { status: 201 })
+  return NextResponse.json({ ...newUser, isSuperAdmin: false, isDesignatedSuperAdmin: false }, { status: 201 })
 }
 
 // ?? PATCH ? update user profile or change password (admin only) ??????????
@@ -106,12 +126,16 @@ export async function PATCH(req: Request) {
   if (deny) return deny
 
   const body = await req.json()
-  const { id, password, name, email, role, team } = body as {
+  const { id, password, name, email, role, team, status } = body as {
     id: string; password?: string
     name?: string; email?: string; role?: string; team?: string
+    status?: string
   }
 
   if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
+  if (password?.trim() && password.length < 8) {
+    return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 })
+  }
 
   const users = readUsers()
   const idx = users.findIndex(u => u.id === id)
@@ -123,6 +147,43 @@ export async function PATCH(req: Request) {
   }
 
   const u = users[idx]
+  if (status !== undefined) {
+    const superDeny = await assertSuperAdmin()
+    if (superDeny) return superDeny
+    if (status !== 'active' && status !== 'blocked') {
+      return NextResponse.json({ error: 'status must be active or blocked' }, { status: 400 })
+    }
+    if (isDesignatedSuperAdmin(users, id) && status === 'blocked') {
+      return NextResponse.json({ error: 'Cannot block the super-admin account' }, { status: 400 })
+    }
+    if (password !== undefined || name !== undefined || email !== undefined || role !== undefined || team !== undefined) {
+      return NextResponse.json({ error: 'Account status must be changed separately from profile fields' }, { status: 400 })
+    }
+    if (status === 'blocked' && u.status !== 'blocked') u.sessionVersion = (u.sessionVersion ?? 0) + 1
+    u.status = status
+    writeUsers(users)
+    const session = await auth()
+    const actor = (session?.user as any)?.email ?? 'unknown'
+    appendAuditLog({
+      ts: new Date().toISOString(),
+      user: actor,
+      action: status === 'blocked' ? 'user.block' : 'user.unblock',
+      detail: `${status === 'blocked' ? 'blocked' : 'unblocked'} user ${u.email}`,
+    })
+    return NextResponse.json({
+      ...u,
+      isSuperAdmin: isConfiguredSuperAdmin(users, u.id),
+      isDesignatedSuperAdmin: isDesignatedSuperAdmin(users, u.id),
+    })
+  }
+
+  if (isDesignatedSuperAdmin(users, id) && role !== undefined && role !== 'admin') {
+    return NextResponse.json({ error: 'Cannot demote the super-admin account' }, { status: 400 })
+  }
+  const requesterId = await getSessionUserId()
+  if (isDesignatedSuperAdmin(users, id) && password?.trim() && requesterId !== id) {
+    return NextResponse.json({ error: 'Only the super-admin can change its own password' }, { status: 403 })
+  }
   if (name)             { u.name = name.trim(); u.avatar = makeAvatar(name) }
   if (email)            u.email = email.trim().toLowerCase()
   if (role && ['admin', 'operator', 'viewer'].includes(role)) u.role = role as StoredUser['role']
@@ -145,7 +206,11 @@ export async function PATCH(req: Request) {
     appendAuditLog({ ts: new Date().toISOString(), user: actor, action: 'user.update', detail: `updated profile for user ${u.email}` })
   }
 
-  return NextResponse.json(u)
+  return NextResponse.json({
+    ...u,
+    isSuperAdmin: isConfiguredSuperAdmin(users, u.id),
+    isDesignatedSuperAdmin: isDesignatedSuperAdmin(users, u.id),
+  })
 }
 
 // ?? DELETE ? remove user (admin only, cannot self-delete) ?????????????????
@@ -155,13 +220,15 @@ export async function DELETE(req: Request) {
 
   const { id } = await req.json() as { id: string }
   if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
-
+  const users = readUsers()
+  if (isDesignatedSuperAdmin(users, id)) {
+    return NextResponse.json({ error: 'Cannot delete the super-admin account' }, { status: 400 })
+  }
   const requesterId = await getSessionUserId()
   if (id === requesterId) {
     return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 })
   }
 
-  const users = readUsers()
   if (!users.find(u => u.id === id)) {
     return NextResponse.json({ error: 'User not found' }, { status: 404 })
   }

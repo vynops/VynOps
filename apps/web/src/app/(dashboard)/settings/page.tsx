@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Settings, User, Bell, Server, Database, Info,
   CheckCircle2, XCircle, RefreshCw, Save, Loader2, Copy, Eye,
-  EyeOff, AlertTriangle, Activity, Shield,
+  EyeOff, AlertTriangle, Activity, Shield, ShieldCheck, Ban,
   ChevronRight, Package, ExternalLink, Zap, Send, Radio,
   Clock, History, ListFilter, BookOpen, RotateCcw, Layers, Trash2, Plus, Pencil, X,
   Users, Lock, UserPlus, Download,
@@ -1197,7 +1197,7 @@ function AIProviderTab() {
 }
 
 // -- Users tab -----------------------------------------------------------
-type StoredUser = { id: string; name: string; email: string; role: 'admin' | 'operator' | 'viewer'; team: string; avatar: string; createdAt: string }
+type StoredUser = { id: string; name: string; email: string; role: 'admin' | 'operator' | 'viewer'; team: string; avatar: string; createdAt: string; status?: 'active' | 'blocked'; isSuperAdmin?: boolean; isDesignatedSuperAdmin?: boolean; sessionVersion?: number }
 const ROLE_BADGE: Record<string, string> = {
   admin:    'bg-brand-500/10 text-brand-400 border-brand-500/30',
   operator: 'bg-warning/10 text-warning border-warning/30',
@@ -1210,12 +1210,15 @@ function UsersTab() {
   const isAdmin = role === 'admin'
   const { data: session } = useSession()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const selfId = (session?.user as any)?.id as string | undefined
+  const sessionUser = session?.user as any
+  const selfId = sessionUser?.id as string | undefined
+  const isSuperAdmin = sessionUser?.isSuperAdmin === true
 
   const [users,    setUsers]    = useState<StoredUser[]>([])
   const [loading,  setLoading]  = useState(true)
   const [saving,   setSaving]   = useState(false)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [blocking, setBlocking] = useState<string | null>(null)
   const [tabError, setTabError] = useState<string | null>(null)
   const [tabOk,    setTabOk]    = useState<string | null>(null)
   const [adding,   setAdding]   = useState(false)
@@ -1238,6 +1241,25 @@ function UsersTab() {
   useEffect(() => { load() }, [load])
 
   function flash(ok: string) { setTabOk(ok); setTimeout(() => setTabOk(null), 3500) }
+
+  async function handleToggleBlock(user: StoredUser) {
+    const status = user.status === 'blocked' ? 'active' : 'blocked'
+    const action = status === 'blocked' ? 'Block' : 'Unblock'
+    if (!confirm(`${action} access for "${user.name}"? ${status === 'blocked' ? 'Their current session will be denied on its next request.' : 'They will need to sign in again.'}`)) return
+    setBlocking(user.id); setTabError(null)
+    try {
+      const response = await fetch('/api/settings/users', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: user.id, status }),
+      })
+      const body = await response.json()
+      if (!response.ok) { setTabError(body.error ?? `HTTP ${response.status}`); return }
+      setUsers(items => items.map(item => item.id === body.id ? body : item))
+      flash(`${action}ed "${body.name}".`)
+    } catch (error) { setTabError(String(error)) }
+    finally { setBlocking(null) }
+  }
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()
@@ -1282,6 +1304,7 @@ function UsersTab() {
   async function handleChangePw(e: React.FormEvent) {
     e.preventDefault()
     if (!pwTarget || !newPw.trim()) { setTabError('Password cannot be empty.'); return }
+    if (newPw.length < 8) { setTabError('Password must be at least 8 characters.'); return }
     setSaving(true); setTabError(null)
     try {
       const r = await fetch('/api/settings/users', {
@@ -1338,7 +1361,11 @@ function UsersTab() {
           <CheckCircle2 className="w-3.5 h-3.5" /> {tabOk}
         </div>
       )}
-
+      {isAdmin && users.length > 0 && !users.some(user => user.isSuperAdmin && user.role === 'admin' && user.status !== 'blocked') && (
+        <div role="status" className="rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-xs text-warning">
+          User blocking is disabled until one active admin is explicitly designated as super-admin in the server user store.
+        </div>
+      )}
       {/* Add user form */}
       <AnimatePresence>
         {adding && (
@@ -1402,16 +1429,20 @@ function UsersTab() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-white">{u.name}</span>
                     {u.id === selfId && <span className="text-2xs px-1.5 py-0.5 rounded border text-brand-400 bg-brand-500/10 border-brand-500/30">you</span>}
+                    {u.isDesignatedSuperAdmin && <span className="text-2xs px-1.5 py-0.5 rounded border text-success bg-success/10 border-success/30">Super admin</span>}
                     <span className={cn('text-2xs px-1.5 py-0.5 rounded border', ROLE_BADGE[u.role] ?? ROLE_BADGE.viewer)}>{u.role}</span>
+                    {u.status === 'blocked' && <span className="text-2xs px-1.5 py-0.5 rounded border text-danger bg-danger/10 border-danger/30">Blocked</span>}
                   </div>
                   <div className="text-xs text-surface-500 truncate">{u.email}{u.team ? ` | ${u.team}` : ''}</div>
                 </div>
                 {isAdmin && (
                   <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <button title="Change password" onClick={() => { setPwTarget(pwTarget === u.id ? null : u.id); setNewPw(''); setTabError(null) }}
-                      className={cn('p-1.5 rounded-lg transition-colors', pwTarget === u.id ? 'text-brand-400 bg-brand-500/10' : 'text-surface-500 hover:text-brand-400 hover:bg-brand-500/10')}>
-                      <Lock className="w-3.5 h-3.5" />
-                    </button>
+                    {(!u.isDesignatedSuperAdmin || isSuperAdmin) && (
+                      <button title="Change password" onClick={() => { setPwTarget(pwTarget === u.id ? null : u.id); setNewPw(''); setTabError(null) }}
+                        className={cn('p-1.5 rounded-lg transition-colors', pwTarget === u.id ? 'text-brand-400 bg-brand-500/10' : 'text-surface-500 hover:text-brand-400 hover:bg-brand-500/10')}>
+                        <Lock className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <button title="Edit user" onClick={() => {
                       if (editTarget?.id === u.id) { setEditTarget(null); setEditForm(null) }
                       else { setEditTarget(u); setEditForm({ name: u.name, email: u.email, role: u.role, team: u.team }) }
@@ -1420,10 +1451,16 @@ function UsersTab() {
                       className={cn('p-1.5 rounded-lg transition-colors', editTarget?.id === u.id ? 'text-brand-400 bg-brand-500/10' : 'text-surface-500 hover:text-brand-400 hover:bg-brand-500/10')}>
                       <Pencil className="w-3.5 h-3.5" />
                     </button>
-                    {u.id !== selfId && (
+                    {u.id !== selfId && !u.isDesignatedSuperAdmin && (
                       <button title="Delete user" onClick={() => handleDelete(u)} disabled={deleting === u.id}
                         className="p-1.5 rounded-lg text-surface-500 hover:text-danger hover:bg-danger/10 transition-colors disabled:opacity-40">
                         {deleting === u.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      </button>
+                    )}
+                    {isSuperAdmin && !u.isSuperAdmin && (
+                      <button title={u.status === 'blocked' ? 'Unblock user' : 'Block user'} onClick={() => handleToggleBlock(u)} disabled={blocking === u.id}
+                        className={cn('p-1.5 rounded-lg transition-colors disabled:opacity-40', u.status === 'blocked' ? 'text-success hover:bg-success/10' : 'text-surface-500 hover:text-danger hover:bg-danger/10')}>
+                        {blocking === u.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : u.status === 'blocked' ? <ShieldCheck className="w-3.5 h-3.5" /> : <Ban className="w-3.5 h-3.5" />}
                       </button>
                     )}
                   </div>
@@ -1437,7 +1474,7 @@ function UsersTab() {
                     exit={{ opacity: 0, height: 0 }} onSubmit={handleChangePw} className="overflow-hidden">
                     <div className="mt-3 pt-3 border-t border-surface-800 flex items-center gap-2">
                       <div className="relative flex-1">
-                        <input type={showPw ? 'text' : 'password'} value={newPw} onChange={e => setNewPw(e.target.value)}
+                        <input type={showPw ? 'text' : 'password'} minLength={8} value={newPw} onChange={e => setNewPw(e.target.value)}
                           placeholder="New password" required
                           className="w-full px-3 py-1.5 bg-surface-800 border border-surface-700 rounded-lg text-xs text-white placeholder-surface-500 focus:outline-none focus:border-brand-500 transition-colors pr-8" />
                         <button type="button" onClick={() => setShowPw(s => !s)}
@@ -1476,7 +1513,7 @@ function UsersTab() {
                       ))}
                       <div>
                         <label className="block text-2xs text-surface-400 mb-1">Role</label>
-                        <select value={editForm.role} onChange={e => setEditForm(f => f ? { ...f, role: e.target.value as StoredUser['role'] } : f)}
+                        <select value={editForm.role} disabled={u.isDesignatedSuperAdmin} onChange={e => setEditForm(f => f ? { ...f, role: e.target.value as StoredUser['role'] } : f)}
                           className="w-full px-3 py-1.5 bg-surface-800 border border-surface-700 rounded-lg text-xs text-white focus:outline-none focus:border-brand-500 transition-colors">
                           <option value="admin">admin</option>
                           <option value="operator">operator</option>
@@ -2390,7 +2427,7 @@ function ProfileTab() {
         ].map(f => (
           <div key={f.key}>
             <label className="text-2xs font-medium text-surface-500 uppercase tracking-wider block mb-1.5">{f.label}</label>
-            <input type="password" value={pw[f.key as keyof typeof pw]}
+            <input type="password" minLength={f.key === 'current' ? undefined : 8} value={pw[f.key as keyof typeof pw]}
               onChange={e => { setPwError(null); setPwOk(false); setPw(p => ({ ...p, [f.key]: e.target.value })) }}
               className="w-full bg-surface-900 border border-surface-700 focus:border-brand-500 rounded-xl px-3 py-2.5 text-sm text-white outline-none transition-all" />
           </div>

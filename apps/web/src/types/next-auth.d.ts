@@ -5,6 +5,11 @@ declare module 'next-auth' {
     role: 'admin' | 'operator' | 'viewer'
     team: string
     avatar: string
+    isSuperAdmin?: boolean
+    mustChangePassword?: boolean
+    status?: 'active' | 'blocked'
+    sessionVersion?: number
+    blocked?: boolean
   }
 
   interface Session {
@@ -15,6 +20,9 @@ declare module 'next-auth' {
       role: 'admin' | 'operator' | 'viewer'
       team: string
       avatar: string
+      blocked: boolean
+      isSuperAdmin: boolean
+      mustChangePassword: boolean
     }
   }
 }
@@ -24,6 +32,10 @@ declare module 'next-auth/jwt' {
     role: 'admin' | 'operator' | 'viewer'
     team: string
     avatar: string
+    blocked: boolean
+    isSuperAdmin: boolean
+    sessionVersion: number
+    mustChangePassword: boolean
   }
 }
 

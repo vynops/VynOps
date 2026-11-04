@@ -14,7 +14,9 @@ function LoginForm() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(searchParams.get('error') === 'blocked'
+    ? 'This account has been blocked. Contact your super administrator.'
+    : '')
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()

@@ -7,6 +7,30 @@ export default auth((req) => {
 
   if (isInternalPath(pathname) && hasInternalSecret(req.headers)) return
 
+  const isBlocked = (req.auth?.user as { blocked?: boolean } | undefined)?.blocked === true
+  if (isBlocked) {
+    if (pathname.startsWith('/api/')) {
+      return new Response(JSON.stringify({ error: 'Account blocked' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    const loginUrl = new URL('/login', req.url)
+    loginUrl.searchParams.set('error', 'blocked')
+    return Response.redirect(loginUrl)
+  }
+
+  const mustChangePassword = (req.auth?.user as { mustChangePassword?: boolean } | undefined)?.mustChangePassword === true
+  if (mustChangePassword && pathname !== '/force-password-change') {
+    if (pathname.startsWith('/api/')) {
+      return new Response(JSON.stringify({ error: 'Password change required' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    return Response.redirect(new URL('/force-password-change', req.url))
+  }
+
   // Return 401 JSON for unauthenticated API calls (skip /api/auth which handles sign-in)
   if (!isLoggedIn && pathname.startsWith('/api/')) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {

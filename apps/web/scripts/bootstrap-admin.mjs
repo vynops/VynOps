@@ -45,21 +45,24 @@ function clearBootstrapValues(file) {
   chmodSync(file, 0o600)
 }
 
-export function bootstrapAdmin({ envFile = ENV_FILE, dataDir = DATA_DIR, env = process.env } = {}) {
+export function bootstrapAdmin({ envFile = ENV_FILE, dataDir = DATA_DIR, env = process.env, skipIfInitialized = false } = {}) {
   const usersFile = join(dataDir, 'users.json')
   const passwordsFile = join(dataDir, 'passwords.json')
   const users = readJson(usersFile, [])
   if (!Array.isArray(users)) throw new Error('User store is invalid; refusing to overwrite it')
-  if (users.length > 0) throw new Error('User store is already initialized; no changes were made')
+  if (users.length > 0) {
+    if (skipIfInitialized) return null
+    throw new Error('User store is already initialized; no changes were made')
+  }
 
   const fileEnv = parseEnvFile(envFile)
   const email = String(env.INITIAL_ADMIN_EMAIL || fileEnv.INITIAL_ADMIN_EMAIL || 'admin@vynops.io').trim().toLowerCase()
-  const password = String(env.INITIAL_ADMIN_PASSWORD || fileEnv.INITIAL_ADMIN_PASSWORD || '')
+  const password = String(env.INITIAL_ADMIN_PASSWORD || fileEnv.INITIAL_ADMIN_PASSWORD || 'changeme')
   const name = String(env.INITIAL_ADMIN_NAME || fileEnv.INITIAL_ADMIN_NAME || 'Platform Administrator').trim()
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('INITIAL_ADMIN_EMAIL must be a valid email address')
-  if (password.length < 12 || password.includes('\n') || password.includes('\r')) {
-    throw new Error('INITIAL_ADMIN_PASSWORD must be a single-line password of at least 12 characters')
+  if ((password !== 'changeme' && password.length < 8) || password.includes('\n') || password.includes('\r')) {
+    throw new Error('INITIAL_ADMIN_PASSWORD must be a single-line password of at least 8 characters')
   }
   if (!name) throw new Error('INITIAL_ADMIN_NAME must not be empty')
 
@@ -80,6 +83,10 @@ export function bootstrapAdmin({ envFile = ENV_FILE, dataDir = DATA_DIR, env = p
     team: 'Platform Engineering',
     avatar: name.split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase(),
     createdAt: new Date().toISOString(),
+    status: 'active',
+    isSuperAdmin: true,
+    mustChangePassword: true,
+    sessionVersion: 0,
   }
 
   writePrivateJson(passwordsFile, { ...existingPasswords, [id]: bcrypt.hashSync(password, 12) })
@@ -91,8 +98,9 @@ export function bootstrapAdmin({ envFile = ENV_FILE, dataDir = DATA_DIR, env = p
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    bootstrapAdmin()
-    console.log('Initial admin created. One-time bootstrap values were removed from .env.local.')
+    const result = bootstrapAdmin()
+    if (result) console.log('Initial admin created with the temporary password changeme. It must be changed at first login.')
+    else console.log('User store already initialized; no admin changes made.')
   } catch (error) {
     console.error(`[bootstrap-admin] ${error.message}`)
     process.exitCode = 1

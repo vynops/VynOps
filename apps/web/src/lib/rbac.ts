@@ -12,7 +12,7 @@ import { NextResponse } from 'next/server'
  */
 export async function assertOperator(): Promise<NextResponse | null> {
   const session = await auth()
-  if (!session) {
+  if (!session || (session.user as any)?.blocked) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -32,7 +32,7 @@ export async function assertOperator(): Promise<NextResponse | null> {
  */
 export async function assertSession(): Promise<NextResponse | null> {
   const session = await auth()
-  if (!session) {
+  if (!session || (session.user as any)?.blocked) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   return null
@@ -44,7 +44,7 @@ export async function assertSession(): Promise<NextResponse | null> {
  */
 export async function assertAdmin(): Promise<NextResponse | null> {
   const session = await auth()
-  if (!session) {
+  if (!session || (session.user as any)?.blocked) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,11 +58,23 @@ export async function assertAdmin(): Promise<NextResponse | null> {
   return null
 }
 
+export async function assertSuperAdmin(): Promise<NextResponse | null> {
+  const session = await auth()
+  if (!session || (session.user as any)?.blocked) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  const user = session.user as any
+  if (user.role !== 'admin' || user.isSuperAdmin !== true) {
+    return NextResponse.json({ error: 'Forbidden: super-admin role required' }, { status: 403 })
+  }
+  return null
+}
+
 /**
  * Returns the session user's id, or null if unauthenticated.
  */
 export async function getSessionUserId(): Promise<string | null> {
   const session = await auth()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (session?.user as any)?.id ?? null
+  return (session?.user as any)?.blocked ? null : (session?.user as any)?.id ?? null
 }

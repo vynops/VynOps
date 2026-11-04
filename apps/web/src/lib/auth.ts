@@ -3,9 +3,23 @@ import Credentials from 'next-auth/providers/credentials'
 import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { logFailedSignIn, logSignOut, logSuccessfulSignIn } from '@/lib/auth-audit'
+import { isAuthSessionBlocked, isConfiguredSuperAdmin } from '@/lib/super-admin'
 
 // -- Development-only fallback users (never used in production) -----------
-const DEMO_USERS = [
+type AuthUser = {
+  id: string
+  name: string
+  email: string
+  role: 'admin' | 'operator' | 'viewer'
+  team: string
+  avatar: string
+  status?: 'active' | 'blocked'
+  isSuperAdmin?: boolean
+  mustChangePassword?: boolean
+  sessionVersion?: number
+}
+
+const DEMO_USERS: AuthUser[] = [
   { id: '1', name: 'Alex Karev',   email: 'admin@VynOps.io',    role: 'admin'    as const, team: 'Platform Engineering', avatar: 'AK' },
   { id: '2', name: 'Sarah Chen',   email: 'operator@VynOps.io', role: 'operator' as const, team: 'SRE',                  avatar: 'SC' },
   { id: '3', name: 'Mike Johnson', email: 'viewer@VynOps.io',   role: 'viewer'   as const, team: 'Engineering',          avatar: 'MJ' },
@@ -20,12 +34,12 @@ const PASSWORD_HASHES: Record<string, string> = {
   '3': process.env.USER_3_PASSWORD_HASH ?? (process.env.DEMO_VIEWER_PASSWORD ? bcrypt.hashSync(process.env.DEMO_VIEWER_PASSWORD, 10) : ''),
 }
 
-function demoUsers(): typeof DEMO_USERS {
+function demoUsers(): AuthUser[] {
   return DEMO_USERS_ENABLED && DEMO_USERS.every(user => Boolean(PASSWORD_HASHES[user.id])) ? DEMO_USERS : []
 }
 
 // -- Read users from data/users.json (upgrade-safe, live-reload) ----------
-function readUsers(): typeof DEMO_USERS {
+function readUsers(): AuthUser[] {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { existsSync, readFileSync } = require('fs') as typeof import('fs')
@@ -34,7 +48,7 @@ function readUsers(): typeof DEMO_USERS {
     const p = join(process.cwd(), 'data', 'users.json')
     if (!existsSync(p)) return demoUsers()
     const arr = JSON.parse(readFileSync(p, 'utf8'))
-    return Array.isArray(arr) && arr.length > 0 ? arr : demoUsers()
+    return Array.isArray(arr) && arr.length > 0 ? arr as AuthUser[] : demoUsers()
   } catch {
     return demoUsers()
   }
@@ -86,6 +100,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           logFailedSignIn()
           return null
         }
+        if (user.status === 'blocked') {
+          logFailedSignIn({ id: user.id, email: user.email })
+          return null
+        }
 
         const hash = getPasswordHash(user.id)
         const valid = hash ? await bcrypt.compare(password, hash) : false
@@ -94,7 +112,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return null
         }
 
-        return { id: user.id, name: user.name, email: user.email, role: user.role, team: user.team, avatar: user.avatar }
+        return {
+          id: user.id, name: user.name, email: user.email, role: user.role,
+          team: user.team, avatar: user.avatar, mustChangePassword: user.mustChangePassword === true,
+          sessionVersion: user.sessionVersion ?? 0,
+        }
       },
     }),
   ],
@@ -109,6 +131,27 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.role   = u.role
         token.team   = u.team
         token.avatar = u.avatar
+        token.sessionVersion = u.sessionVersion ?? 0
+        token.mustChangePassword = u.mustChangePassword === true
+      }
+      const userId = user?.id ?? token.sub
+      const currentUsers = readUsers()
+      const currentUser = userId ? currentUsers.find(candidate => candidate.id === userId) : undefined
+      if (currentUser) {
+        const tokenSessionVersion = Number(token.sessionVersion ?? user?.sessionVersion ?? 0)
+        token.blocked = isAuthSessionBlocked(currentUser, tokenSessionVersion)
+        token.isSuperAdmin = isConfiguredSuperAdmin(currentUsers, currentUser.id)
+        token.mustChangePassword = currentUser.mustChangePassword === true
+        token.role = currentUser.role
+        token.name = currentUser.name
+        token.email = currentUser.email
+        token.team = currentUser.team
+        token.avatar = currentUser.avatar
+        token.sessionVersion = tokenSessionVersion
+      } else {
+        token.blocked = true
+        token.isSuperAdmin = false
+        token.mustChangePassword = false
       }
       return token
     },
@@ -120,6 +163,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         u.team = token.team
         u.avatar = token.avatar
         u.id = token.sub
+        u.blocked = token.blocked === true
+        u.isSuperAdmin = token.isSuperAdmin === true
+        u.mustChangePassword = token.mustChangePassword === true
       }
       return session
     },

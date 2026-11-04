@@ -1,7 +1,8 @@
 import { auth } from '@/lib/auth'
 import bcrypt from 'bcryptjs'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { appendAuditLog } from '@/app/api/settings/config/shared'
 
 const DATA_DIR      = join(process.cwd(), 'data')
 const PASSWORDS_FILE = join(DATA_DIR, 'passwords.json')
@@ -57,6 +58,23 @@ export async function POST(req: Request) {
   const overrides = readOverrides()
   overrides[userId] = newHash
   writeFileSync(PASSWORDS_FILE, JSON.stringify(overrides, null, 2))
+
+  const usersPath = join(DATA_DIR, 'users.json')
+  if (existsSync(usersPath)) {
+    const users = JSON.parse(readFileSync(usersPath, 'utf8'))
+    if (Array.isArray(users)) {
+      const user = users.find((item: { id?: string }) => item.id === userId)
+      if (user?.mustChangePassword) {
+        user.mustChangePassword = false
+        user.sessionVersion = (user.sessionVersion ?? 0) + 1
+        writeFileSync(usersPath, JSON.stringify(users, null, 2))
+        const credentialFile = join(DATA_DIR, 'initial-admin-credentials.txt')
+        if (user.isSuperAdmin && existsSync(credentialFile)) unlinkSync(credentialFile)
+      }
+    }
+  }
+
+  appendAuditLog({ ts: new Date().toISOString(), user: session.user.email ?? userId, action: 'user.password_change', detail: 'changed own password' })
 
   return Response.json({ ok: true })
 }

@@ -216,31 +216,30 @@ cd vynops
 # 2. Install all workspace dependencies
 npm install
 
-# 3. Install creates apps/web/.env.local with a generated AUTH_SECRET.
+# 3. Install creates apps/web/.env.local with a generated AUTH_SECRET and bootstraps the first admin if no user store exists.
 # Do not copy .env.local.example over it; that would replace the generated secret.
 ```
 
-Edit `apps/web/.env.local` to add the AI key and choose a strong first-admin password. The admin name and email are prefilled and can be changed:
-```env
-GROQ_API_KEY=gsk_...          # free at https://console.groq.com
-INITIAL_ADMIN_NAME=VynOps Administrator
-INITIAL_ADMIN_EMAIL=admin@vynops.io
-INITIAL_ADMIN_PASSWORD=<unique password of at least 12 characters>
-```
+The initial admin defaults to `admin@vynops.io` and the temporary password is `changeme`. No password or `.env.local` setup is required. Keep the installation on a trusted network until the first-login password change is complete.
 
 ```bash
-# 4. Create the first persistent admin (one-time; removes INITIAL_ADMIN_* from .env.local)
-npm run bootstrap-admin
-
-# 5. Start kubectl proxy (in a separate terminal)
+# 4. Start kubectl proxy (in a separate terminal, when connecting to a cluster)
 kubectl proxy --port=8001
 
-# 6. Start VynOps
+# 5. Start VynOps
 npm run dev
 # → http://localhost:3030
 ```
 
-The bootstrap creates `data/users.json` and a bcrypt hash in `data/passwords.json`; it does not store plaintext passwords. It refuses to overwrite a non-empty user store. Later users can be added in **Settings → Users**.
+Install creates the super-admin in `apps/web/data/users.json` and its bcrypt password hash in `apps/web/data/passwords.json`. On first login, the app requires the super-admin to replace `changeme` with a password of at least 8 characters before granting access. Setup never overwrites a non-empty user store; existing installs are left untouched.
+
+**Super-admin and user blocking:** On a fresh install, the first admin is the super-admin. To designate an existing admin on an existing install, run from the repository root:
+```bash
+node apps/web/scripts/designate-super-admin.mjs <existing-admin-email>
+```
+The command only marks one existing active admin; it does not create an account or promote a non-admin. Only that super-admin can block or unblock users in **Settings → Users**. The API enforces the permission, protects the super-admin account, and records block/unblock actions in the audit log. Blocking takes effect on the user's next request; unblocked users must sign in again.
+
+Add the optional `GROQ_API_KEY` to `apps/web/.env.local` to enable the AI Copilot. Later users can be added in **Settings → Users**.
 
 **Optional local demo mode:** Set `DEMO_USERS_ENABLED=true` and unique `DEMO_ADMIN_PASSWORD`, `DEMO_OPERATOR_PASSWORD`, and `DEMO_VIEWER_PASSWORD` values in `.env.local`. Demo users are disabled in production and are not created in `users.json`.
 
@@ -638,6 +637,7 @@ Every API request can be routed to a specific cluster by including these headers
 | "No cluster" in header | No cluster registered | Settings → Clusters → Add Cluster |
 | Prometheus data missing | kubectl proxy not running | `kubectl proxy --port=8001 &` |
 | Pod terminal (exec) doesn't work | Using `next dev` instead of `npm run dev` | Always use `npm run dev` — it uses `server.mjs` |
+| Port 3030 already in use | Another process on port 3030 | `lsof -i :3030` to find it, or set `PORT=4030` in `.env.local` |
 | `NEXTAUTH_URL` mismatch | Accessing via different IP/port than configured | Update `NEXTAUTH_URL` to match your actual access URL |
 | Loki "not configured" | Active cluster has empty `lokiUrl` | Edit cluster in Settings → Clusters, set Loki URL |
 | AI Copilot not responding | Groq key missing or invalid | Check `GROQ_API_KEY` in `.env.local` |
