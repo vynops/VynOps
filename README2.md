@@ -373,7 +373,7 @@ VynOps supports multiple Kubernetes clusters. Cluster configuration is stored in
 5. Optionally configure Prometheus, Loki, Jaeger, Grafana, and Alertmanager URLs per cluster
 6. Click **Set Default** to make it the active cluster on page load
 
-**Request routing:**  
+**Request routing:**
 Each API request carries cluster-specific headers (`x-k8s-url`, `x-prom-url`, `x-loki-url`, etc.) set by the frontend based on the active cluster. This means switching clusters in the header dropdown immediately reroutes all API calls — no page refresh needed.
 
 **Fallback order** (per request):
@@ -418,10 +418,10 @@ VynOps can take automated remediation actions when issues are detected.
 - Scaling deployments up/down
 - Rolling back failed deployments
 
-**Audit trail:**  
+**Audit trail:**
 Every autonomous action is appended to `data/autonomous.plans.jsonl` and displayed in **Autonomous Ops** page with full step-by-step history.
 
-**Enable/disable per action type:**  
+**Enable/disable per action type:**
 Settings → Autonomous Ops → toggle individual action types on/off.
 
 ---
@@ -465,7 +465,7 @@ VynOps sends notifications automatically when critical events occur.
 | Role | Capabilities |
 |------|-------------|
 | `admin` | Full access — manage users, clusters, settings |
-| `sre` | All operational features — incidents, deployments, K8s actions |
+| `operator` | Operational access — view data, create/acknowledge/resolve incidents, run automation, mute alerts, and perform permitted Kubernetes actions; no user management or admin-only audit access |
 | `viewer` | Read-only — dashboards, metrics, incidents (no actions) |
 
 ### Data security
@@ -707,4 +707,3 @@ MIT License — see [LICENSE](LICENSE) for details.
 <div align="center">
   <sub>Built with ❤️ for platform engineers who are tired of switching between 12 tabs during an incident.</sub>
 </div>
-
