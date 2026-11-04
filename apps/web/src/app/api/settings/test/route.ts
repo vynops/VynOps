@@ -161,7 +161,7 @@ export async function POST(req: Request) {
     const requestedApiKey: string = body.apiKey ?? ''
     const config = readConfig()
     const apiKey: string = requestedApiKey.startsWith('****') || requestedApiKey === '***configured***'
-      ? (provider === 'groq' ? config.groq_api_key ?? process.env.GROQ_API_KEY ?? '' : config.ai_api_key ?? process.env.AI_API_KEY ?? '')
+      ? (config.ai_api_key ?? (provider === 'groq' ? config.groq_api_key : undefined) ?? process.env.AI_API_KEY ?? (provider === 'groq' ? process.env.GROQ_API_KEY : undefined) ?? '')
       : requestedApiKey
     const model: string = body.model ?? ''
     const baseUrl = String(body.baseUrl ?? '').replace(/\/$/, '')
