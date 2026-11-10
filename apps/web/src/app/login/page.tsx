@@ -67,11 +67,8 @@ function LoginForm() {
 
         {/* Card */}
         <div className="glass-card p-8 space-y-6">
-          <div>
-            <h2 className="text-lg font-semibold text-white">Sign in</h2>
-            <p className="text-sm text-surface-400 mt-1">
-              Access your infrastructure dashboard
-            </p>
+          <div className="text-center">
+            <h2 className="text-lg font-semibold text-white">Sign In</h2>
           </div>
 
           {/* Error */}
